@@ -16,6 +16,26 @@ interface InsuranceDeduction {
   per_pay_period: number;
 }
 
+const US_STATES: [string, string][] = [
+  ["", "Auto-detect (22% default)"],
+  ["AL", "Alabama"], ["AK", "Alaska"], ["AZ", "Arizona"], ["AR", "Arkansas"],
+  ["CA", "California"], ["CO", "Colorado"], ["CT", "Connecticut"], ["DE", "Delaware"],
+  ["FL", "Florida"], ["GA", "Georgia"], ["HI", "Hawaii"], ["ID", "Idaho"],
+  ["IL", "Illinois"], ["IN", "Indiana"], ["IA", "Iowa"], ["KS", "Kansas"],
+  ["KY", "Kentucky"], ["LA", "Louisiana"], ["ME", "Maine"], ["MD", "Maryland"],
+  ["MA", "Massachusetts"], ["MI", "Michigan"], ["MN", "Minnesota"], ["MS", "Mississippi"],
+  ["MO", "Missouri"], ["MT", "Montana"], ["NE", "Nebraska"], ["NV", "Nevada"],
+  ["NH", "New Hampshire"], ["NJ", "New Jersey"], ["NM", "New Mexico"], ["NY", "New York"],
+  ["NC", "North Carolina"], ["ND", "North Dakota"], ["OH", "Ohio"], ["OK", "Oklahoma"],
+  ["OR", "Oregon"], ["PA", "Pennsylvania"], ["RI", "Rhode Island"], ["SC", "South Carolina"],
+  ["SD", "South Dakota"], ["TN", "Tennessee"], ["TX", "Texas"], ["UT", "Utah"],
+  ["VT", "Vermont"], ["VA", "Virginia"], ["WA", "Washington"], ["WV", "West Virginia"],
+  ["WI", "Wisconsin"], ["WY", "Wyoming"], ["DC", "District of Columbia"],
+];
+
+// States with no income tax
+const NO_TAX_STATES = new Set(["FL", "TX", "WA", "NV", "SD", "WY", "AK", "TN", "NH"]);
+
 export default function Settings() {
   const [profile, setProfile] = useState<PayProfile | null>(null);
   const [deductions, setDeductions] = useState<InsuranceDeduction[]>([]);
@@ -31,8 +51,12 @@ export default function Settings() {
 
   // Deduction form
   const [dedName, setDedName] = useState("");
+  const [dedMode, setDedMode] = useState<"percentage" | "learn" | "fixed">("percentage");
   const [dedPercentage, setDedPercentage] = useState("");
   const [dedFixed, setDedFixed] = useState("");
+  // "Learn from my check" fields
+  const [dedActualDeducted, setDedActualDeducted] = useState("");
+  const [dedReferenceGross, setDedReferenceGross] = useState("");
 
   async function loadData() {
     try {
@@ -94,25 +118,58 @@ export default function Settings() {
   async function addDeduction(e: React.FormEvent) {
     e.preventDefault();
     if (!dedName) return;
+
+    const body: Record<string, unknown> = {
+      name: dedName,
+      per_pay_period: dedMode !== "fixed",
+    };
+
+    if (dedMode === "learn") {
+      body.actual_deducted = parseFloat(dedActualDeducted) || 0;
+      body.reference_gross = parseFloat(dedReferenceGross) || 0;
+    } else if (dedMode === "percentage") {
+      body.percentage = parseFloat(dedPercentage) || 0;
+    } else {
+      body.fixed_amount = parseFloat(dedFixed) || 0;
+      body.percentage = 0;
+    }
+
     try {
       await fetch("/api/insurance-deductions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: dedName,
-          percentage: parseFloat(dedPercentage) || 0,
-          fixed_amount: dedFixed ? parseFloat(dedFixed) : null,
-          per_pay_period: true,
-        }),
+        body: JSON.stringify(body),
       });
       setDedName("");
       setDedPercentage("");
       setDedFixed("");
+      setDedActualDeducted("");
+      setDedReferenceGross("");
+      setDedMode("percentage");
       loadData();
     } catch (err) {
       console.error("Failed to add deduction:", err);
     }
   }
+
+  async function deleteDeduction(id: number) {
+    try {
+      await fetch(`/api/insurance-deductions/${id}`, { method: "DELETE" });
+      loadData();
+    } catch (err) {
+      console.error("Failed to delete deduction:", err);
+    }
+  }
+
+  const estimatedTaxRate = (() => {
+    if (customTaxRate) return parseFloat(customTaxRate);
+    if (region && region.length === 2) {
+      // Provide a rough estimate for display
+      const noTax = NO_TAX_STATES.has(region.toUpperCase());
+      return noTax ? 22 : 25;
+    }
+    return 22;
+  })();
 
   return (
     <div className="space-y-6">
@@ -135,7 +192,7 @@ export default function Settings() {
                 onChange={(e) => setHourlyRate(e.target.value)}
                 required
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                placeholder="15.00"
+                placeholder="e.g. 15.00"
               />
             </div>
 
@@ -153,20 +210,32 @@ export default function Settings() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Region (for tax estimate)</label>
-              <input
-                type="text"
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                State (for tax estimation)
+              </label>
+              <select
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                placeholder="e.g. US, CA"
-              />
+              >
+                {US_STATES.map(([code, label]) => (
+                  <option key={code} value={code}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              {region && (
+                <p className="mt-1 text-xs text-gray-400">
+                  Estimated effective tax rate: ~{estimatedTaxRate}%
+                  {NO_TAX_STATES.has(region.toUpperCase()) ? " (no state income tax)" : " (federal + state combined)"}
+                </p>
+              )}
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Custom Tax Rate (%)
-                <span className="text-xs text-gray-400 ml-1">— leave blank for auto</span>
+                <span className="text-xs text-gray-400 ml-1">— leave blank to use state estimate</span>
               </label>
               <input
                 type="number"
@@ -174,7 +243,7 @@ export default function Settings() {
                 value={customTaxRate}
                 onChange={(e) => setCustomTaxRate(e.target.value)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                placeholder="Auto"
+                placeholder="Use state estimate"
               />
             </div>
 
@@ -193,50 +262,156 @@ export default function Settings() {
           {/* Insurance Deductions */}
           <div className="rounded-xl bg-white p-5 shadow-sm border border-gray-200 space-y-4">
             <h3 className="text-lg font-semibold text-gray-900">Insurance Deductions</h3>
+            <p className="text-xs text-gray-500">
+              Track health, dental, vision, and other insurance deductions from your paycheck.
+            </p>
 
             {deductions.length > 0 && (
               <div className="space-y-2">
                 {deductions.map((d) => (
                   <div key={d.id} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-sm">
                     <div>
-                      <span className="font-medium text-gray-900 capitalize">{d.name}</span>
+                      <span className="font-medium text-gray-900">{d.name}</span>
                       <span className="text-gray-500 ml-2">
-                        {d.percentage}%{d.fixed_amount ? ` + $${d.fixed_amount}` : ""}
+                        {d.per_pay_period ? (
+                          <>
+                            {d.percentage > 0 ? `${d.percentage}% of gross` : ""}
+                            {d.percentage > 0 && d.fixed_amount ? " + " : ""}
+                            {d.fixed_amount ? `$${Number(d.fixed_amount).toFixed(2)}` : ""}
+                            {!d.percentage && !d.fixed_amount ? "0%" : ""}
+                            {" "}per check
+                          </>
+                        ) : (
+                          <>{d.fixed_amount ? `$${Number(d.fixed_amount).toFixed(2)}` : ""} (not per-period)</>
+                        )}
                       </span>
                     </div>
-                    <span className="text-xs text-gray-400">per period</span>
+                    <button
+                      onClick={() => deleteDeduction(d.id)}
+                      className="text-gray-400 hover:text-red-500 transition-colors text-xs ml-2"
+                      title="Delete"
+                    >
+                      ✕
+                    </button>
                   </div>
                 ))}
               </div>
             )}
 
+            {/* Add Deduction Form */}
             <form onSubmit={addDeduction} className="space-y-3 border-t border-gray-100 pt-3">
-              <p className="text-xs text-gray-500">Add a deduction (health, dental, vision, etc.)</p>
-              <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Deduction Name</label>
                 <input
                   type="text"
                   value={dedName}
                   onChange={(e) => setDedName(e.target.value)}
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                  placeholder="Name"
-                />
-                <input
-                  type="number"
-                  step="0.1"
-                  value={dedPercentage}
-                  onChange={(e) => setDedPercentage(e.target.value)}
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                  placeholder="% of pay"
-                />
-                <input
-                  type="number"
-                  step="0.01"
-                  value={dedFixed}
-                  onChange={(e) => setDedFixed(e.target.value)}
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                  placeholder="Fixed $"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  placeholder="Health insurance, dental, vision, etc."
                 />
               </div>
+
+              {/* Mode selector */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">How would you like to enter this?</label>
+                <div className="flex flex-wrap gap-2">
+                  {(["percentage", "learn", "fixed"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setDedMode(mode)}
+                      className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                        dedMode === mode
+                          ? "bg-indigo-600 text-white"
+                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      }`}
+                    >
+                      {mode === "percentage" && "% of gross pay"}
+                      {mode === "learn" && "Learn from last check"}
+                      {mode === "fixed" && "Fixed dollar amount"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Mode-specific inputs */}
+              {dedMode === "percentage" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Percentage of gross pay
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={dedPercentage}
+                      onChange={(e) => setDedPercentage(e.target.value)}
+                      className="w-32 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                      placeholder="e.g. 5"
+                    />
+                    <span className="text-sm text-gray-500">%</span>
+                  </div>
+                </div>
+              )}
+
+              {dedMode === "learn" && (
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-3">
+                  <p className="text-xs text-amber-800 font-medium">
+                    📋 Enter the dollar amount deducted from your last paycheck and the gross pay on that check.
+                    PayWise will calculate the percentage and apply it going forward.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Amount deducted ($)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={dedActualDeducted}
+                        onChange={(e) => setDedActualDeducted(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                        placeholder="e.g. 85.00"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Gross pay on that check ($)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={dedReferenceGross}
+                        onChange={(e) => setDedReferenceGross(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                        placeholder="e.g. 1600.00"
+                      />
+                    </div>
+                  </div>
+                  {dedActualDeducted && dedReferenceGross && parseFloat(dedReferenceGross) > 0 && (
+                    <p className="text-xs text-amber-700">
+                      Calculated: {((parseFloat(dedActualDeducted) / parseFloat(dedReferenceGross)) * 100).toFixed(2)}% of gross
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {dedMode === "fixed" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Fixed dollar amount per check ($)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={dedFixed}
+                    onChange={(e) => setDedFixed(e.target.value)}
+                    className="w-32 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    placeholder="e.g. 25.00"
+                  />
+                </div>
+              )}
+
               <button
                 type="submit"
                 className="rounded-lg bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 transition-colors"
