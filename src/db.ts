@@ -145,6 +145,46 @@ function seedResources(db: Database) {
       phone: "1-866-674-6327",
       region: "US",
     },
+    {
+      title: "California Department of Financial Protection & Innovation",
+      description: "CA state agency offering financial education, consumer protection, and free counseling referrals for California residents.",
+      category: "counseling",
+      url: "https://dfpi.ca.gov",
+      phone: "1-866-275-2677",
+      region: "CA",
+    },
+    {
+      title: "Texas Financial Education Endowment",
+      description: "Free financial coaching, budgeting workshops, and debt management programs for Texans. Available in English and Spanish.",
+      category: "education",
+      url: "https://www.tfee.org",
+      phone: "1-512-555-0190",
+      region: "TX",
+    },
+    {
+      title: "NYC Financial Empowerment Centers",
+      description: "Free one-on-one professional financial counseling for New Yorkers. Help with debt, budgeting, savings, and credit.",
+      category: "counseling",
+      url: "https://www.nyc.gov/site/dca/consumers/get-free-financial-counseling.page",
+      phone: "311",
+      region: "NY",
+    },
+    {
+      title: "Florida Prosperity Partnership",
+      description: "Statewide coalition providing free financial coaching, tax preparation assistance, and benefits screening for Florida residents.",
+      category: "assistance",
+      url: "https://www.floridaprosperity.org",
+      phone: "1-850-555-0170",
+      region: "FL",
+    },
+    {
+      title: "Illinois Financial Wellness Hub",
+      description: "Free financial literacy resources, workshops, and one-on-one coaching for Illinois residents through the state treasurer's office.",
+      category: "education",
+      url: "https://www.illinoistreasurer.gov",
+      phone: "1-312-555-0180",
+      region: "IL",
+    },
   ];
 
   const insert = db.prepare(

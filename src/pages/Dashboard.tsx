@@ -71,38 +71,173 @@ const STATUS_COLORS: Record<string, string> = {
   unpaid: "text-red-500",
 };
 
+// ── Date helpers for smart defaults ──
+
+function getPayPeriodDates(
+  frequency: string
+): { startDate: string; endDate: string } {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  switch (frequency) {
+    case "weekly": {
+      // Start = most recent Monday, End = this coming Sunday
+      const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon...
+      const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+      const monday = new Date(today);
+      monday.setDate(today.getDate() - daysSinceMonday);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      return {
+        startDate: monday.toISOString().split("T")[0],
+        endDate: sunday.toISOString().split("T")[0],
+      };
+    }
+    case "bi-weekly": {
+      // Start = most recent Monday, End = start + 13 days
+      const dayOfWeek = today.getDay();
+      const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+      const monday = new Date(today);
+      monday.setDate(today.getDate() - daysSinceMonday);
+      const endDate = new Date(monday);
+      endDate.setDate(monday.getDate() + 13);
+      return {
+        startDate: monday.toISOString().split("T")[0],
+        endDate: endDate.toISOString().split("T")[0],
+      };
+    }
+    case "monthly": {
+      // Start = 1st of current month, End = last day of current month
+      const first = new Date(today.getFullYear(), today.getMonth(), 1);
+      const last = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      return {
+        startDate: first.toISOString().split("T")[0],
+        endDate: last.toISOString().split("T")[0],
+      };
+    }
+    default: {
+      const start = today.toISOString().split("T")[0];
+      const end = new Date(today);
+      end.setDate(today.getDate() + 13);
+      return { startDate: start, endDate: end.toISOString().split("T")[0] };
+    }
+  }
+}
+
+const US_STATE_NAMES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas",
+  CA: "California", CO: "Colorado", CT: "Connecticut", DE: "Delaware",
+  FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho",
+  IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",
+  KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
+  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi",
+  MO: "Missouri", MT: "Montana", NE: "Nebraska", NV: "Nevada",
+  NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York",
+  NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
+  OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina",
+  SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah",
+  VT: "Vermont", VA: "Virginia", WA: "Washington", WV: "West Virginia",
+  WI: "Wisconsin", WY: "Wyoming", DC: "District of Columbia",
+};
+
 export default function Dashboard() {
   const [profile, setProfile] = useState<PayProfile | null>(null);
   const [periods, setPeriods] = useState<PayPeriod[]>([]);
   const [projection, setProjection] = useState<ProjectionData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const [profRes, perRes, projRes] = await Promise.all([
-          fetch("/api/profiles/current"),
-          fetch("/api/pay-periods"),
-          fetch("/api/projection"),
-        ]);
-        const profData = await profRes.json();
-        const perData = await perRes.json();
-        const projData = await projRes.json();
+  // Enter Hours form state
+  const defaultDates = profile
+    ? getPayPeriodDates(profile.pay_frequency)
+    : { startDate: "", endDate: "" };
+  const [hoursWorked, setHoursWorked] = useState("");
+  const [startDate, setStartDate] = useState(defaultDates.startDate);
+  const [endDate, setEndDate] = useState(defaultDates.endDate);
+  const [submitting, setSubmitting] = useState(false);
+  const [successMsg, setSuccessMsg] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
 
-        setProfile(profData.profile || null);
-        setPeriods(perData.pay_periods || []);
-        setProjection(projData.payPeriods ? projData : null);
-      } catch (err) {
-        console.error("Failed to load dashboard:", err);
-      } finally {
-        setLoading(false);
-      }
+  // Update date defaults when profile changes
+  useEffect(() => {
+    if (profile) {
+      const dates = getPayPeriodDates(profile.pay_frequency);
+      setStartDate(dates.startDate);
+      setEndDate(dates.endDate);
     }
-    load();
+  }, [profile?.pay_frequency]);
+
+  async function loadDashboard() {
+    try {
+      const [profRes, perRes, projRes] = await Promise.all([
+        fetch("/api/profiles/current"),
+        fetch("/api/pay-periods"),
+        fetch("/api/projection"),
+      ]);
+      const profData = await profRes.json();
+      const perData = await perRes.json();
+      const projData = await projRes.json();
+
+      setProfile(profData.profile || null);
+      setPeriods(perData.pay_periods || []);
+      setProjection(projData.payPeriods ? projData : null);
+    } catch (err) {
+      console.error("Failed to load dashboard:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadDashboard();
   }, []);
+
+  async function handleSubmitHours(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hoursWorked || parseFloat(hoursWorked) < 0) {
+      setErrorMsg("Please enter a valid number of hours.");
+      setTimeout(() => setErrorMsg(""), 3000);
+      return;
+    }
+
+    setSubmitting(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    try {
+      const res = await fetch("/api/pay-periods", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hours_worked: parseFloat(hoursWorked),
+          start_date: startDate,
+          end_date: endDate,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setErrorMsg(data.error || "Failed to save hours.");
+        setTimeout(() => setErrorMsg(""), 4000);
+        return;
+      }
+
+      // Reset form and refresh
+      setHoursWorked("");
+      setSuccessMsg("Paycheck calculated! See your updated projection below.");
+      setTimeout(() => setSuccessMsg(""), 5000);
+      await loadDashboard();
+    } catch (err) {
+      console.error("Failed to add pay period:", err);
+      setErrorMsg("Network error. Please try again.");
+      setTimeout(() => setErrorMsg(""), 4000);
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   const lastPeriod = periods[0];
   const firstProjected = projection?.payPeriods?.[0];
+  const hasBills = projection?.summary && projection.summary.totalBills > 0;
 
   return (
     <div className="space-y-6">
@@ -119,6 +254,84 @@ export default function Dashboard() {
         </div>
       ) : (
         <>
+          {/* ── Enter Hours Card ── */}
+          <div className="rounded-xl bg-white p-5 shadow-sm border border-indigo-200 ring-1 ring-indigo-100">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+              <span>🕐</span> Enter Hours Worked
+            </h3>
+
+            {errorMsg && (
+              <div className="mb-3 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+                {errorMsg}
+              </div>
+            )}
+
+            {successMsg && (
+              <div className="mb-3 rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-700">
+                ✓ {successMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmitHours} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Hours Worked This Period
+                </label>
+                <input
+                  type="number"
+                  step="0.25"
+                  min="0"
+                  value={hoursWorked}
+                  onChange={(e) => setHoursWorked(e.target.value)}
+                  required
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-lg font-semibold focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  placeholder="e.g. 40"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Pay Period Start
+                  </label>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    required
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Pay Period End
+                  </label>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    required
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-400">
+                Auto-filled based on your{" "}
+                <span className="font-medium text-gray-500 capitalize">{profile.pay_frequency}</span>{" "}
+                pay schedule. Adjust dates if needed.
+              </p>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 transition-colors disabled:opacity-50"
+              >
+                {submitting ? "Calculating..." : "Calculate Paycheck"}
+              </button>
+            </form>
+          </div>
+
           {/* Past Due Alerts */}
           {projection?.summary?.pastDueAlerts && projection.summary.pastDueAlerts.length > 0 && (
             <div className="rounded-xl bg-red-50 border border-red-200 p-4">
@@ -184,8 +397,18 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* No bills yet message */}
+          {!hasBills && !loading && (
+            <div className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center">
+              <p className="text-gray-500">Add some bills to see your projection</p>
+              <p className="text-sm text-gray-400 mt-1">
+                Head to <strong>Bills</strong> to add your recurring expenses and get a personalized plan.
+              </p>
+            </div>
+          )}
+
           {/* Projection Summary */}
-          {projection?.summary && (
+          {hasBills && projection?.summary && (
             <div className="grid grid-cols-3 gap-3">
               <div className="rounded-lg bg-white p-3 shadow-sm border border-gray-200 text-center">
                 <p className="text-2xl font-bold text-gray-900">{projection.summary.coveredBills}</p>
