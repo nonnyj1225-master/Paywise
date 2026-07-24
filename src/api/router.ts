@@ -1,4 +1,5 @@
-import { getDb, ensureUser } from "../db";
+import { getDb } from "../db";
+import { authenticateUser, handleAuthRequest } from "./auth";
 
 type JsonResponse = Record<string, unknown> | Array<unknown>;
 
@@ -17,6 +18,20 @@ function parseBody(req: Request): Promise<unknown> {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) return req.json();
   return Promise.resolve({});
+}
+
+// ── Auth helper: requires auth, returns userId ──
+function requireAuth(req: Request): number | Response {
+  const result = authenticateUser(req);
+  if (typeof result !== "number") return result;
+  return result;
+}
+
+// ── Helper: extract userId, forwarding the error response to caller ──
+function getUserId(req: Request): { userId: number } | { errorResponse: Response } {
+  const result = requireAuth(req);
+  if (result instanceof Response) return { errorResponse: result };
+  return { userId: result };
 }
 
 // =============================================================================
@@ -40,7 +55,6 @@ const STATE_TAX_RATES: Record<string, number> = {
 function estimateTaxRate(region: string): number {
   const upper = region.toUpperCase().trim();
   if (STATE_TAX_RATES[upper] !== undefined) return STATE_TAX_RATES[upper];
-  // Fallback: check for legacy country codes
   const legacy: Record<string, number> = { "US": 0.22, "UK": 0.20, "AU": 0.27, "": 0.22 };
   if (legacy[upper] !== undefined) return legacy[upper];
   return 0.22;
@@ -143,39 +157,33 @@ function scoreBill(
   bill: { due_date: string; priority: number; category: string; amount: number },
   today: Date
 ): number {
-  // Higher score = higher priority
   const dueDate = new Date(bill.due_date + "T00:00:00");
   const daysUntilDue = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-  // Due date proximity: closer = higher score (max 50 points, decaying)
   let dueScore = 50;
   if (daysUntilDue > 0) {
     dueScore = Math.max(0, 50 - daysUntilDue * 1.5);
   } else if (daysUntilDue < 0) {
-    // Past due gets highest urgency
     dueScore = 60 + Math.min(10, Math.abs(daysUntilDue));
   }
 
-  // Priority level: 1-5, maps to 0-40 points
   const priorityScore = (bill.priority - 1) * 10;
-
-  // Category severity: maps to 0-30 points
   const severity = CATEGORY_SEVERITY[bill.category] || 1;
   const categoryScore = ((severity - 1) / 6) * 30;
-
-  // Tiebreaker: smaller amounts first (0-5 points, inverted)
   const amountScore = Math.max(0, 5 - (bill.amount / 200));
 
   return dueScore + priorityScore + categoryScore + amountScore;
 }
 
 // =============================================================================
-// Profiles
+// Profiles — scoped to authenticated user
 // =============================================================================
 
 async function handleProfiles(req: Request): Promise<Response> {
   const db = getDb();
-  const userId = ensureUser();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
 
   if (req.method === "GET") {
     const row = db.query("SELECT * FROM pay_profiles WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as Record<string, unknown> | null;
@@ -193,8 +201,8 @@ async function handleProfiles(req: Request): Promise<Response> {
 
     if (existing) {
       db.run(
-        `UPDATE pay_profiles SET hourly_rate=?, pay_frequency=?, region=?, custom_tax_rate=?, updated_at=datetime('now') WHERE id=?`,
-        [hourlyRate, payFrequency, region, customTaxRate, existing.id]
+        `UPDATE pay_profiles SET hourly_rate=?, pay_frequency=?, region=?, custom_tax_rate=?, updated_at=datetime('now') WHERE id=? AND user_id=?`,
+        [hourlyRate, payFrequency, region, customTaxRate, existing.id, userId]
       );
       const row = db.query("SELECT * FROM pay_profiles WHERE id = ?").get(existing.id);
       return json({ profile: row }, 201);
@@ -212,15 +220,18 @@ async function handleProfiles(req: Request): Promise<Response> {
 }
 
 // =============================================================================
-// Pay Periods
+// Pay Periods — scoped to authenticated user, unlimited history
 // =============================================================================
 
 async function handlePayPeriods(req: Request): Promise<Response> {
   const db = getDb();
-  const userId = ensureUser();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
 
   if (req.method === "GET") {
-    const rows = db.query("SELECT * FROM pay_periods WHERE user_id = ? ORDER BY end_date DESC LIMIT 20").all(userId);
+    // Unlimited history (no LIMIT)
+    const rows = db.query("SELECT * FROM pay_periods WHERE user_id = ? ORDER BY end_date DESC").all(userId);
     return json({ pay_periods: rows });
   }
 
@@ -234,7 +245,6 @@ async function handlePayPeriods(req: Request): Promise<Response> {
     const hourlyRate = Number(profile.hourly_rate) || 0;
     const grossPay = Math.round(hoursWorked * hourlyRate * 100) / 100;
 
-    // Calculate tax using state lookup
     let taxRate = 0;
     if (profile.custom_tax_rate != null) {
       taxRate = Number(profile.custom_tax_rate);
@@ -242,7 +252,6 @@ async function handlePayPeriods(req: Request): Promise<Response> {
       taxRate = estimateTaxRate(String(profile.region || ""));
     }
 
-    // Calculate insurance deductions
     const deductions = db.query("SELECT * FROM insurance_deductions WHERE user_id = ?").all(userId) as Array<Record<string, unknown>>;
     let insuranceTotal = 0;
     for (const d of deductions) {
@@ -273,12 +282,14 @@ async function handlePayPeriods(req: Request): Promise<Response> {
 }
 
 // =============================================================================
-// Bills
+// Bills — scoped to authenticated user
 // =============================================================================
 
 async function handleBills(req: Request, billId?: string): Promise<Response> {
   const db = getDb();
-  const userId = ensureUser();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
 
   if (req.method === "GET") {
     const rows = db.query("SELECT * FROM bills WHERE user_id = ? ORDER BY due_date ASC").all(userId);
@@ -338,12 +349,14 @@ async function handleBills(req: Request, billId?: string): Promise<Response> {
 }
 
 // =============================================================================
-// Insurance Deductions
+// Insurance Deductions — scoped to authenticated user
 // =============================================================================
 
 async function handleInsuranceDeductions(req: Request, deductionId?: string): Promise<Response> {
   const db = getDb();
-  const userId = ensureUser();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
 
   if (req.method === "GET") {
     const rows = db.query("SELECT * FROM insurance_deductions WHERE user_id = ?").all(userId);
@@ -360,8 +373,6 @@ async function handleInsuranceDeductions(req: Request, deductionId?: string): Pr
     let percentage = Number(body.percentage) || 0;
     let fixedAmount: number | null = body.fixed_amount != null ? Number(body.fixed_amount) : null;
 
-    // "Learn from my last check" flow:
-    // If actual_deducted and reference_gross are provided, calculate the percentage
     if (body.actual_deducted != null && body.reference_gross != null) {
       const actualDeducted = Number(body.actual_deducted);
       const referenceGross = Number(body.reference_gross);
@@ -389,7 +400,6 @@ async function handleInsuranceDeductions(req: Request, deductionId?: string): Pr
     const fixedAmount = body.fixed_amount !== undefined ? (body.fixed_amount != null ? Number(body.fixed_amount) : null) : (existing as Record<string, unknown>).fixed_amount;
     const perPayPeriod = body.per_pay_period != null ? (body.per_pay_period ? 1 : 0) : Number((existing as Record<string, unknown>).per_pay_period);
 
-    // "Learn from my last check" flow on update too
     if (body.actual_deducted != null && body.reference_gross != null) {
       const actualDeducted = Number(body.actual_deducted);
       const referenceGross = Number(body.reference_gross);
@@ -419,12 +429,14 @@ async function handleInsuranceDeductions(req: Request, deductionId?: string): Pr
 }
 
 // =============================================================================
-// Projection — "Best Course of Action" Engine
+// Projection — "Best Course of Action" Engine — scoped to authenticated user
 // =============================================================================
 
 async function handleProjection(_req: Request): Promise<Response> {
   const db = getDb();
-  const userId = ensureUser();
+  const uid = getUserId(_req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
 
   const profile = db.query("SELECT * FROM pay_profiles WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as Record<string, unknown> | null;
   if (!profile) return json({ payPeriods: [], summary: { totalBills: 0, coveredBills: 0, uncoveredBills: 0, pastDueAlerts: [], projectedSavings: 0 }, message: "Set up your pay profile first" });
@@ -433,7 +445,6 @@ async function handleProjection(_req: Request): Promise<Response> {
   const payFrequency = String(profile.pay_frequency || "bi-weekly");
   const region = String(profile.region || "");
 
-  // Determine tax rate
   let taxRate: number;
   if (profile.custom_tax_rate != null) {
     taxRate = Number(profile.custom_tax_rate);
@@ -441,12 +452,10 @@ async function handleProjection(_req: Request): Promise<Response> {
     taxRate = estimateTaxRate(region);
   }
 
-  // Get insurance deductions
   const deductions = db.query("SELECT * FROM insurance_deductions WHERE user_id = ?").all(userId) as Array<{
     id: number; name: string; percentage: number; fixed_amount: number | null; per_pay_period: number;
   }>;
 
-  // Get average hours from recent pay periods, or use a default (40 for weekly/bi-weekly, 160 for monthly)
   const recentPeriods = db.query(
     "SELECT * FROM pay_periods WHERE user_id = ? ORDER BY end_date DESC LIMIT 5"
   ).all(userId) as Array<Record<string, unknown>>;
@@ -455,7 +464,6 @@ async function handleProjection(_req: Request): Promise<Response> {
   if (recentPeriods.length > 0) {
     avgHours = recentPeriods.reduce((sum, p) => sum + Number(p.hours_worked), 0) / recentPeriods.length;
   } else {
-    // Sensible defaults based on frequency
     switch (payFrequency) {
       case 'weekly': avgHours = 40; break;
       case 'bi-weekly': avgHours = 80; break;
@@ -464,12 +472,10 @@ async function handleProjection(_req: Request): Promise<Response> {
     }
   }
 
-  // Determine how many pay periods to project
   const daysPerPeriod = getDaysPerPeriod(payFrequency);
-  const projectionDays = 30; // 30-day window; Pro tier could be 180
+  const projectionDays = 30;
   const periodCount = Math.ceil(projectionDays / daysPerPeriod) + 1;
 
-  // Start projection from today
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -483,19 +489,16 @@ async function handleProjection(_req: Request): Promise<Response> {
     deductions
   );
 
-  // Get all bills
   const allBills = db.query("SELECT * FROM bills WHERE user_id = ? ORDER BY due_date ASC").all(userId) as Array<{
     id: number; name: string; amount: number; due_date: string; category: string; priority: number; recurring: number;
   }>;
 
-  // Score and sort bills by priority
   const scoredBills = allBills.map(bill => ({
     ...bill,
     score: scoreBill(bill, today),
   }));
   scoredBills.sort((a, b) => b.score - a.score);
 
-  // Track allocations across pay periods
   interface BillAllocation {
     billId: number;
     billName: string;
@@ -511,21 +514,16 @@ async function handleProjection(_req: Request): Promise<Response> {
   const billAllocations: Map<number, BillAllocation> = new Map();
   const pastDueAlerts: Array<{ id: number; name: string; dueDate: string; amount: number }> = [];
 
-  // For each bill, try to allocate from the earliest pay period whose start date
-  // is on or before the bill's due date
   for (const bill of scoredBills) {
     const billDueDate = new Date(bill.due_date + "T00:00:00");
     let remaining = bill.amount;
     let allocated = 0;
     let allocatedPeriodIndex = -1;
 
-    // Find the first pay period that can cover this bill (start date <= due date)
     for (let pi = 0; pi < payPeriods.length; pi++) {
       const periodStart = new Date(payPeriods[pi].startDate + "T00:00:00");
+      if (periodStart > billDueDate) break;
 
-      if (periodStart > billDueDate) break; // This period starts after bill is due, can't cover it
-
-      // How much net pay is available in this period after previous allocations?
       let periodUsed = 0;
       billAllocations.forEach(alloc => {
         if (alloc.payPeriodIndex === pi) periodUsed += alloc.allocated;
@@ -539,13 +537,11 @@ async function handleProjection(_req: Request): Promise<Response> {
         allocated += toAllocate;
         remaining -= toAllocate;
         allocatedPeriodIndex = pi;
-
-        // Round to 2 decimal places
         allocated = Math.round(allocated * 100) / 100;
         remaining = Math.round(remaining * 100) / 100;
       }
 
-      if (remaining <= 0.005) break; // Effectively fully paid
+      if (remaining <= 0.005) break;
     }
 
     let status: 'paid' | 'partial' | 'unpaid' = 'unpaid';
@@ -567,7 +563,6 @@ async function handleProjection(_req: Request): Promise<Response> {
       status,
     });
 
-    // Check if past due (due date before today AND not fully paid)
     if (billDueDate < today && status !== 'paid') {
       pastDueAlerts.push({
         id: bill.id,
@@ -578,7 +573,6 @@ async function handleProjection(_req: Request): Promise<Response> {
     }
   }
 
-  // Build per-pay-period response
   const payPeriodResults = payPeriods.map((pp, pi) => {
     const ppBills: Array<{
       id: number; name: string; amount: number; dueDate: string;
@@ -603,8 +597,6 @@ async function handleProjection(_req: Request): Promise<Response> {
 
     const remaining = Math.round((pp.netPay - periodBillTotal) * 100) / 100;
     const remainingPositive = Math.max(0, remaining);
-
-    // Suggest 70% to savings, 30% safe to spend
     const suggestedSavings = Math.round(remainingPositive * 0.7 * 100) / 100;
     const safeToSpend = Math.round((remainingPositive - suggestedSavings) * 100) / 100;
 
@@ -622,7 +614,6 @@ async function handleProjection(_req: Request): Promise<Response> {
     };
   });
 
-  // Summary
   const totalBills = Math.round(allBills.reduce((s, b) => s + b.amount, 0) * 100) / 100;
   let coveredBills = 0;
   let uncoveredBills = 0;
@@ -651,7 +642,7 @@ async function handleProjection(_req: Request): Promise<Response> {
 }
 
 // =============================================================================
-// Resources
+// Resources — PUBLIC, no auth required
 // =============================================================================
 
 async function handleResources(_req: Request): Promise<Response> {
@@ -668,7 +659,17 @@ export async function handleApiRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
 
-  // Route matching
+  // ── Auth routes ──
+  if (path.startsWith("/api/auth/")) {
+    return handleAuthRequest(req);
+  }
+
+  // ── Public routes (no auth required) ──
+  if (path === "/api/resources") {
+    return handleResources(req);
+  }
+
+  // ── Protected routes ──
   if (path === "/api/profiles" || path === "/api/profiles/current") {
     return handleProfiles(req);
   }
@@ -691,9 +692,6 @@ export async function handleApiRequest(req: Request): Promise<Response> {
   }
   if (path === "/api/projection") {
     return handleProjection(req);
-  }
-  if (path === "/api/resources") {
-    return handleResources(req);
   }
 
   return error("Not found", 404);

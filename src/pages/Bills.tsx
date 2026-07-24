@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { apiFetch } from "../lib/api";
 
 interface Bill {
   id: number;
@@ -67,7 +68,7 @@ export default function Bills() {
 
   async function loadBills() {
     try {
-      const res = await fetch("/api/bills");
+      const res = await apiFetch("/api/bills");
       const data = await res.json();
       setBills(data.bills || []);
     } catch (err) {
@@ -84,7 +85,7 @@ export default function Bills() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     try {
-      const res = await fetch("/api/bills", {
+      const res = await apiFetch("/api/bills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -113,7 +114,7 @@ export default function Bills() {
 
   async function handleDelete(id: number) {
     try {
-      await fetch(`/api/bills/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/bills/${id}`, { method: "DELETE" });
       loadBills();
     } catch (err) {
       console.error("Failed to delete bill:", err);

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { apiFetch } from "../lib/api";
 
 interface PayProfile {
   id: number;
@@ -169,9 +170,9 @@ export default function Dashboard() {
   async function loadDashboard() {
     try {
       const [profRes, perRes, projRes] = await Promise.all([
-        fetch("/api/profiles/current"),
-        fetch("/api/pay-periods"),
-        fetch("/api/projection"),
+        apiFetch("/api/profiles/current"),
+        apiFetch("/api/pay-periods"),
+        apiFetch("/api/projection"),
       ]);
       const profData = await profRes.json();
       const perData = await perRes.json();
@@ -204,7 +205,7 @@ export default function Dashboard() {
     setSuccessMsg("");
 
     try {
-      const res = await fetch("/api/pay-periods", {
+      const res = await apiFetch("/api/pay-periods", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

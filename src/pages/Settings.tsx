@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { apiFetch } from "../lib/api";
 
 interface PayProfile {
   id: number;
@@ -61,8 +62,8 @@ export default function Settings() {
   async function loadData() {
     try {
       const [profRes, dedRes] = await Promise.all([
-        fetch("/api/profiles/current"),
-        fetch("/api/insurance-deductions"),
+        apiFetch("/api/profiles/current"),
+        apiFetch("/api/insurance-deductions"),
       ]);
       const profData = await profRes.json();
       const dedData = await dedRes.json();
@@ -91,7 +92,7 @@ export default function Settings() {
     setSaving(true);
     setMessage("");
     try {
-      const res = await fetch("/api/profiles", {
+      const res = await apiFetch("/api/profiles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -135,7 +136,7 @@ export default function Settings() {
     }
 
     try {
-      await fetch("/api/insurance-deductions", {
+      await apiFetch("/api/insurance-deductions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -154,7 +155,7 @@ export default function Settings() {
 
   async function deleteDeduction(id: number) {
     try {
-      await fetch(`/api/insurance-deductions/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/insurance-deductions/${id}`, { method: "DELETE" });
       loadData();
     } catch (err) {
       console.error("Failed to delete deduction:", err);

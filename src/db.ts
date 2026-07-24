@@ -10,6 +10,8 @@ export function getDb(): Database {
     db.run("PRAGMA journal_mode=WAL");
     db.run("PRAGMA foreign_keys=ON");
     initSchema(db);
+    migrateAuth(db);
+    addIndexes(db);
     seedResources(db);
   }
   return db;
@@ -19,6 +21,9 @@ function initSchema(db: Database) {
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE,
+      password_hash TEXT,
+      session_token TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
@@ -100,6 +105,37 @@ function initSchema(db: Database) {
   `);
 }
 
+// ── Migration: add auth columns to existing users table ──
+function migrateAuth(db: Database) {
+  const tableInfo = db
+    .query("PRAGMA table_info(users)")
+    .all() as Array<{ name: string }>;
+
+  const hasEmail = tableInfo.some((col) => col.name === "email");
+  if (!hasEmail) {
+    db.run("ALTER TABLE users ADD COLUMN email TEXT UNIQUE");
+  }
+
+  const hasPasswordHash = tableInfo.some((col) => col.name === "password_hash");
+  if (!hasPasswordHash) {
+    db.run("ALTER TABLE users ADD COLUMN password_hash TEXT");
+  }
+
+  const hasSessionToken = tableInfo.some((col) => col.name === "session_token");
+  if (!hasSessionToken) {
+    db.run("ALTER TABLE users ADD COLUMN session_token TEXT");
+  }
+}
+
+// ── Performance indexes on user_id columns ──
+function addIndexes(db: Database) {
+  db.run("CREATE INDEX IF NOT EXISTS idx_pay_profiles_user_id ON pay_profiles(user_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_pay_periods_user_id ON pay_periods(user_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_bills_user_id ON bills(user_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_insurance_deductions_user_id ON insurance_deductions(user_id)");
+}
+
+// ── Seed shared resources (public, not user-scoped) ──
 function seedResources(db: Database) {
   const count = db.query("SELECT COUNT(*) as c FROM resources").get() as { c: number };
   if (count.c > 0) return;
@@ -194,13 +230,4 @@ function seedResources(db: Database) {
   for (const r of resources) {
     insert.run(r.title, r.description, r.category, r.url, r.phone, r.region);
   }
-}
-
-// Ensure a default user exists (single-user mode)
-export function ensureUser(): number {
-  const db = getDb();
-  const row = db.query("SELECT id FROM users LIMIT 1").get() as { id: number } | null;
-  if (row) return row.id;
-  db.run("INSERT INTO users DEFAULT VALUES");
-  return (db.query("SELECT last_insert_rowid() as id").get() as { id: number }).id;
 }

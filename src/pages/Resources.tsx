@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { apiFetch } from "../lib/api";
 
 interface Resource {
   id: number;
@@ -41,8 +42,8 @@ export default function Resources() {
     async function load() {
       try {
         const [resRes, profRes] = await Promise.all([
-          fetch("/api/resources"),
-          fetch("/api/profiles/current"),
+          apiFetch("/api/resources"),
+          apiFetch("/api/profiles/current"),
         ]);
         const resData = await resRes.json();
         const profData = await profRes.json();
