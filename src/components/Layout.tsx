@@ -1,5 +1,6 @@
 import { Outlet, NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import NonnyBot from "./NonnyBot";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: "📊" },
@@ -60,6 +61,8 @@ export default function Layout() {
           ))}
         </div>
       </nav>
+
+      <NonnyBot />
     </div>
   );
 }
