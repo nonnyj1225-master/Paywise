@@ -176,47 +176,265 @@ function scoreBill(
 }
 
 // =============================================================================
-// Profiles — scoped to authenticated user
+// Profiles — scoped to authenticated user, multi-job support
 // =============================================================================
 
-async function handleProfiles(req: Request): Promise<Response> {
+async function handleProfiles(req: Request, profileId?: string): Promise<Response> {
   const db = getDb();
   const uid = getUserId(req);
   if ("errorResponse" in uid) return uid.errorResponse;
   const userId = uid.userId;
 
+  // GET /api/profiles/current — return the active profile
   if (req.method === "GET") {
-    const row = db.query("SELECT * FROM pay_profiles WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as Record<string, unknown> | null;
-    return json(row ? { profile: row } : { profile: null });
+    const url = new URL(req.url);
+    if (url.pathname === "/api/profiles/current") {
+      const row = db.query(
+        "SELECT * FROM pay_profiles WHERE user_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1"
+      ).get(userId) as Record<string, unknown> | null;
+      return json(row ? { profile: row } : { profile: null });
+    }
+
+    // GET /api/profiles — return all profiles
+    const rows = db.query(
+      "SELECT * FROM pay_profiles WHERE user_id = ? ORDER BY started_at DESC"
+    ).all(userId);
+    return json({ profiles: rows });
   }
 
+  // POST /api/profiles — create a new profile
   if (req.method === "POST") {
     const body = (await parseBody(req)) as Record<string, unknown>;
     const hourlyRate = Number(body.hourly_rate) || 0;
     const payFrequency = String(body.pay_frequency || "bi-weekly");
     const region = String(body.region || "");
     const customTaxRate = body.custom_tax_rate != null ? Number(body.custom_tax_rate) : null;
+    const label = String(body.label || "My Job");
+    const startedAt = String(body.started_at || new Date().toISOString().split("T")[0]);
+    const endedAt = body.ended_at ? String(body.ended_at) : null;
+    const isActive = body.is_active !== false ? 1 : 0;
 
-    const existing = db.query("SELECT id FROM pay_profiles WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as { id: number } | null;
-
-    if (existing) {
-      db.run(
-        `UPDATE pay_profiles SET hourly_rate=?, pay_frequency=?, region=?, custom_tax_rate=?, updated_at=datetime('now') WHERE id=? AND user_id=?`,
-        [hourlyRate, payFrequency, region, customTaxRate, existing.id, userId]
-      );
-      const row = db.query("SELECT * FROM pay_profiles WHERE id = ?").get(existing.id);
-      return json({ profile: row }, 201);
-    } else {
-      db.run(
-        `INSERT INTO pay_profiles (user_id, hourly_rate, pay_frequency, region, custom_tax_rate) VALUES (?, ?, ?, ?, ?)`,
-        [userId, hourlyRate, payFrequency, region, customTaxRate]
-      );
-      const row = db.query("SELECT * FROM pay_profiles WHERE id = last_insert_rowid()").get();
-      return json({ profile: row }, 201);
+    // If this new profile should be active, deactivate all others
+    if (isActive) {
+      db.run("UPDATE pay_profiles SET is_active = 0, updated_at = datetime('now') WHERE user_id = ?", [userId]);
     }
+
+    db.run(
+      `INSERT INTO pay_profiles (user_id, hourly_rate, pay_frequency, region, custom_tax_rate, label, is_active, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, hourlyRate, payFrequency, region, customTaxRate, label, isActive, startedAt, endedAt]
+    );
+
+    const row = db.query("SELECT * FROM pay_profiles WHERE id = last_insert_rowid()").get();
+    return json({ profile: row }, 201);
+  }
+
+  // PUT /api/profiles/:id — update a specific profile
+  if (req.method === "PUT" && profileId) {
+    const existing = db.query("SELECT * FROM pay_profiles WHERE id = ? AND user_id = ?")
+      .get(Number(profileId), userId);
+    if (!existing) return error("Profile not found", 404);
+
+    const body = (await parseBody(req)) as Record<string, unknown>;
+    const ex = existing as Record<string, unknown>;
+    const hourlyRate = body.hourly_rate != null ? Number(body.hourly_rate) : Number(ex.hourly_rate);
+    const payFrequency = body.pay_frequency != null ? String(body.pay_frequency) : String(ex.pay_frequency);
+    const region = body.region !== undefined ? String(body.region) : String(ex.region);
+    const customTaxRate = body.custom_tax_rate !== undefined
+      ? (body.custom_tax_rate != null ? Number(body.custom_tax_rate) : null)
+      : (ex.custom_tax_rate != null ? Number(ex.custom_tax_rate) : null);
+    const label = body.label != null ? String(body.label) : String(ex.label || "My Job");
+    const startedAt = body.started_at != null ? String(body.started_at) : String(ex.started_at || "");
+    const endedAt = body.ended_at !== undefined
+      ? (body.ended_at != null ? String(body.ended_at) : null)
+      : (ex.ended_at != null ? String(ex.ended_at) : null);
+    const isActive = body.is_active != null ? (body.is_active ? 1 : 0) : Number(ex.is_active);
+
+    if (isActive) {
+      db.run("UPDATE pay_profiles SET is_active = 0, updated_at = datetime('now') WHERE user_id = ? AND id != ?", [userId, Number(profileId)]);
+    }
+
+    db.run(
+      `UPDATE pay_profiles SET hourly_rate=?, pay_frequency=?, region=?, custom_tax_rate=?, label=?, is_active=?, started_at=?, ended_at=?, updated_at=datetime('now')
+       WHERE id=? AND user_id=?`,
+      [hourlyRate, payFrequency, region, customTaxRate, label, isActive, startedAt, endedAt, Number(profileId), userId]
+    );
+
+    const row = db.query("SELECT * FROM pay_profiles WHERE id = ?").get(Number(profileId));
+    return json({ profile: row });
+  }
+
+  // DELETE /api/profiles/:id — delete a profile (but not the last one)
+  if (req.method === "DELETE" && profileId) {
+    const existing = db.query("SELECT * FROM pay_profiles WHERE id = ? AND user_id = ?")
+      .get(Number(profileId), userId);
+    if (!existing) return error("Profile not found", 404);
+
+    const count = db.query("SELECT COUNT(*) as c FROM pay_profiles WHERE user_id = ?")
+      .get(userId) as { c: number };
+    if (count.c <= 1) return error("Cannot delete your only pay profile", 400);
+
+    const wasActive = (existing as Record<string, unknown>).is_active;
+    db.run("DELETE FROM pay_profiles WHERE id = ? AND user_id = ?", [Number(profileId), userId]);
+
+    // If we deleted the active profile, activate the most recent remaining one
+    if (wasActive) {
+      db.run(
+        "UPDATE pay_profiles SET is_active = 1, updated_at = datetime('now') WHERE user_id = ? AND id = (SELECT id FROM pay_profiles WHERE user_id = ? ORDER BY started_at DESC LIMIT 1)",
+        [userId, userId]
+      );
+    }
+
+    return json({ deleted: true });
   }
 
   return error("Method not allowed", 405);
+}
+
+// POST /api/profiles/:id/activate — activate a specific profile
+async function handleActivateProfile(req: Request, profileId: string): Promise<Response> {
+  const db = getDb();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
+
+  if (req.method !== "POST") return error("Method not allowed", 405);
+
+  const existing = db.query("SELECT * FROM pay_profiles WHERE id = ? AND user_id = ?")
+    .get(Number(profileId), userId);
+  if (!existing) return error("Profile not found", 404);
+
+  // Deactivate all profiles, then activate this one
+  db.run("UPDATE pay_profiles SET is_active = 0, updated_at = datetime('now') WHERE user_id = ?", [userId]);
+  db.run("UPDATE pay_profiles SET is_active = 1, updated_at = datetime('now') WHERE id = ? AND user_id = ?", [Number(profileId), userId]);
+
+  const row = db.query("SELECT * FROM pay_profiles WHERE id = ?").get(Number(profileId));
+  return json({ profile: row });
+}
+
+// =============================================================================
+// Compare Jobs — profit/loss comparison between two profiles
+// =============================================================================
+
+async function handleCompareJobs(req: Request): Promise<Response> {
+  const db = getDb();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
+
+  if (req.method !== "GET") return error("Method not allowed", 405);
+
+  const url = new URL(req.url);
+  const profileAId = url.searchParams.get("profile_a");
+  const profileBId = url.searchParams.get("profile_b");
+
+  if (!profileAId || !profileBId) return error("Both profile_a and profile_b query params are required", 400);
+  if (profileAId === profileBId) return error("Select two different profiles to compare", 400);
+
+  // Fetch both profiles
+  const profileA = db.query("SELECT * FROM pay_profiles WHERE id = ? AND user_id = ?")
+    .get(Number(profileAId), userId) as Record<string, unknown> | null;
+  const profileB = db.query("SELECT * FROM pay_profiles WHERE id = ? AND user_id = ?")
+    .get(Number(profileBId), userId) as Record<string, unknown> | null;
+
+  if (!profileA) return error("Profile A not found", 404);
+  if (!profileB) return error("Profile B not found", 404);
+
+  // Fetch pay periods for both profiles
+  const periodsA = db.query(
+    "SELECT * FROM pay_periods WHERE user_id = ? AND pay_profile_id = ? ORDER BY end_date ASC"
+  ).all(userId, Number(profileAId)) as Array<Record<string, unknown>>;
+
+  const periodsB = db.query(
+    "SELECT * FROM pay_periods WHERE user_id = ? AND pay_profile_id = ? ORDER BY end_date ASC"
+  ).all(userId, Number(profileBId)) as Array<Record<string, unknown>>;
+
+  // Calculate averages
+  function avg(arr: number[]): number {
+    if (arr.length === 0) return 0;
+    return arr.reduce((s, v) => s + v, 0) / arr.length;
+  }
+
+  function calcTaxRate(period: Record<string, unknown>): number {
+    const gross = Number(period.gross_pay) || 0;
+    const tax = Number(period.tax_amount) || 0;
+    return gross > 0 ? (tax / gross) * 100 : 0;
+  }
+
+  function calcNetAfterBills(netPay: number, userId: number): number {
+    const allBills = db.query(
+      "SELECT SUM(amount) as total FROM bills WHERE user_id = ?"
+    ).get(userId) as { total: number | null };
+    const monthlyBills = (allBills.total || 0);
+    // Approximate per-period bill load based on the profile's pay frequency
+    return netPay - (monthlyBills / 2); // rough bi-weekly approximation
+  }
+
+  const netPaysA = periodsA.map(p => Number(p.net_pay) || 0);
+  const netPaysB = periodsB.map(p => Number(p.net_pay) || 0);
+  const insuranceA = periodsA.map(p => Number(p.insurance_deductions) || 0);
+  const insuranceB = periodsB.map(p => Number(p.insurance_deductions) || 0);
+  const taxRatesA = periodsA.map(p => calcTaxRate(p));
+  const taxRatesB = periodsB.map(p => calcTaxRate(p));
+
+  const avgNetPayA = avg(netPaysA);
+  const avgNetPayB = avg(netPaysB);
+  const avgTaxRateA = avg(taxRatesA);
+  const avgTaxRateB = avg(taxRatesB);
+  const avgInsuranceA = avg(insuranceA);
+  const avgInsuranceB = avg(insuranceB);
+
+  const hourlyRateA = Number(profileA.hourly_rate) || 0;
+  const hourlyRateB = Number(profileB.hourly_rate) || 0;
+
+  const netAfterBillsA = calcNetAfterBills(avgNetPayA, userId);
+  const netAfterBillsB = calcNetAfterBills(avgNetPayB, userId);
+
+  function pctChange(oldVal: number, newVal: number): number {
+    if (oldVal === 0) return newVal > 0 ? 100 : 0;
+    return ((newVal - oldVal) / Math.abs(oldVal)) * 100;
+  }
+
+  return json({
+    profileA: {
+      id: profileA.id,
+      label: profileA.label || "Job A",
+      hourly_rate: hourlyRateA,
+      region: profileA.region || "",
+    },
+    profileB: {
+      id: profileB.id,
+      label: profileB.label || "Job B",
+      hourly_rate: hourlyRateB,
+      region: profileB.region || "",
+    },
+    comparison: {
+      hourlyRateChange: {
+        absolute: Math.round((hourlyRateB - hourlyRateA) * 100) / 100,
+        percentage: Math.round(pctChange(hourlyRateA, hourlyRateB) * 10) / 10,
+      },
+      averageNetPayA: Math.round(avgNetPayA * 100) / 100,
+      averageNetPayB: Math.round(avgNetPayB * 100) / 100,
+      netPayChange: {
+        absolute: Math.round((avgNetPayB - avgNetPayA) * 100) / 100,
+        percentage: Math.round(pctChange(avgNetPayA, avgNetPayB) * 10) / 10,
+      },
+      averageTaxRateA: Math.round(avgTaxRateA * 10) / 10,
+      averageTaxRateB: Math.round(avgTaxRateB * 10) / 10,
+      insuranceChange: {
+        absolute: Math.round((avgInsuranceB - avgInsuranceA) * 100) / 100,
+        percentage: Math.round(pctChange(avgInsuranceA, avgInsuranceB) * 10) / 10,
+      },
+      netAfterBillsA: Math.round(netAfterBillsA * 100) / 100,
+      netAfterBillsB: Math.round(netAfterBillsB * 100) / 100,
+      netAfterBillsChange: {
+        absolute: Math.round((netAfterBillsB - netAfterBillsA) * 100) / 100,
+        percentage: Math.round(pctChange(netAfterBillsA, netAfterBillsB) * 10) / 10,
+      },
+    },
+    payPeriodsA: periodsA,
+    payPeriodsB: periodsB,
+  });
 }
 
 // =============================================================================
@@ -238,7 +456,7 @@ async function handlePayPeriods(req: Request): Promise<Response> {
   if (req.method === "POST") {
     const body = (await parseBody(req)) as Record<string, unknown>;
 
-    const profile = db.query("SELECT * FROM pay_profiles WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as Record<string, unknown> | null;
+    const profile = db.query("SELECT * FROM pay_profiles WHERE user_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1").get(userId) as Record<string, unknown> | null;
     if (!profile) return error("No pay profile found. Create a profile first.", 400);
 
     const hoursWorked = Number(body.hours_worked) || 0;
@@ -438,7 +656,7 @@ async function handleProjection(_req: Request): Promise<Response> {
   if ("errorResponse" in uid) return uid.errorResponse;
   const userId = uid.userId;
 
-  const profile = db.query("SELECT * FROM pay_profiles WHERE user_id = ? ORDER BY id DESC LIMIT 1").get(userId) as Record<string, unknown> | null;
+  const profile = db.query("SELECT * FROM pay_profiles WHERE user_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1").get(userId) as Record<string, unknown> | null;
   if (!profile) return json({ payPeriods: [], summary: { totalBills: 0, coveredBills: 0, uncoveredBills: 0, pastDueAlerts: [], projectedSavings: 0 }, message: "Set up your pay profile first" });
 
   const hourlyRate = Number(profile.hourly_rate) || 0;
@@ -670,7 +888,21 @@ export async function handleApiRequest(req: Request): Promise<Response> {
   }
 
   // ── Protected routes ──
-  if (path === "/api/profiles" || path === "/api/profiles/current") {
+  if (path === "/api/compare-jobs") {
+    return handleCompareJobs(req);
+  }
+  if (path.startsWith("/api/profiles/current")) {
+    return handleProfiles(req);
+  }
+  if (path.startsWith("/api/profiles/") && path.endsWith("/activate")) {
+    const profileId = path.split("/")[3];
+    return handleActivateProfile(req, profileId);
+  }
+  if (path.startsWith("/api/profiles/")) {
+    const profileId = path.split("/")[3];
+    return handleProfiles(req, profileId);
+  }
+  if (path === "/api/profiles") {
     return handleProfiles(req);
   }
   if (path === "/api/pay-periods") {

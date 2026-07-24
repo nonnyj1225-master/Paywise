@@ -11,6 +11,7 @@ export function getDb(): Database {
     db.run("PRAGMA foreign_keys=ON");
     initSchema(db);
     migrateAuth(db);
+    migratePayProfiles(db);
     addIndexes(db);
     seedResources(db);
   }
@@ -125,6 +126,38 @@ function migrateAuth(db: Database) {
   if (!hasSessionToken) {
     db.run("ALTER TABLE users ADD COLUMN session_token TEXT");
   }
+}
+
+// ── Migration: add job history columns to pay_profiles ──
+function migratePayProfiles(db: Database) {
+  const tableInfo = db
+    .query("PRAGMA table_info(pay_profiles)")
+    .all() as Array<{ name: string }>;
+
+  const hasLabel = tableInfo.some((col) => col.name === "label");
+  if (!hasLabel) {
+    db.run("ALTER TABLE pay_profiles ADD COLUMN label TEXT");
+  }
+
+  const hasIsActive = tableInfo.some((col) => col.name === "is_active");
+  if (!hasIsActive) {
+    db.run("ALTER TABLE pay_profiles ADD COLUMN is_active INTEGER DEFAULT 1");
+  }
+
+  const hasStartedAt = tableInfo.some((col) => col.name === "started_at");
+  if (!hasStartedAt) {
+    db.run("ALTER TABLE pay_profiles ADD COLUMN started_at TEXT");
+  }
+
+  const hasEndedAt = tableInfo.some((col) => col.name === "ended_at");
+  if (!hasEndedAt) {
+    db.run("ALTER TABLE pay_profiles ADD COLUMN ended_at TEXT");
+  }
+
+  // Set defaults for existing rows: if no label, use a generic one; if no started_at, use created_at
+  db.run("UPDATE pay_profiles SET label = 'My Job' WHERE label IS NULL OR label = ''");
+  db.run("UPDATE pay_profiles SET is_active = 1 WHERE is_active IS NULL");
+  db.run("UPDATE pay_profiles SET started_at = created_at WHERE started_at IS NULL");
 }
 
 // ── Performance indexes on user_id columns ──

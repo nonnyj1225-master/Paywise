@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import Bills from "./pages/Bills";
 import Settings from "./pages/Settings";
 import Resources from "./pages/Resources";
+import Compare from "./pages/Compare";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 
@@ -72,6 +73,7 @@ export default function App() {
       >
         <Route path="/" element={<Dashboard />} />
         <Route path="/bills" element={<Bills />} />
+        <Route path="/compare" element={<Compare />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/resources" element={<Resources />} />
       </Route>

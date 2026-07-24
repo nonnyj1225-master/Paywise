@@ -6,6 +6,8 @@ interface PayProfile {
   hourly_rate: number;
   pay_frequency: string;
   region: string;
+  label: string;
+  is_active: number;
 }
 
 interface PayPeriod {
@@ -257,9 +259,14 @@ export default function Dashboard() {
         <>
           {/* ── Enter Hours Card ── */}
           <div className="rounded-xl bg-white p-5 shadow-sm border border-indigo-200 ring-1 ring-indigo-100">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1 flex items-center gap-2">
               <span>🕐</span> Enter Hours Worked
             </h3>
+            {profile.label && (
+              <p className="text-xs text-indigo-600 font-medium mb-3">
+                Job: {profile.label} — ${Number(profile.hourly_rate).toFixed(2)}/hr
+              </p>
+            )}
 
             {errorMsg && (
               <div className="mb-3 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
