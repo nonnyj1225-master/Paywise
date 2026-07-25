@@ -7,6 +7,7 @@ import Settings from "./pages/Settings";
 import Resources from "./pages/Resources";
 import Compare from "./pages/Compare";
 import Goals from "./pages/Goals";
+import Support from "./pages/Support";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 
@@ -78,6 +79,7 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/resources" element={<Resources />} />
         <Route path="/goals" element={<Goals />} />
+        <Route path="/support" element={<Support />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

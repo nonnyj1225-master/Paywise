@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 
 interface PayProfile {
@@ -648,6 +649,20 @@ export default function Settings() {
             + Add Deduction
           </button>
         </form>
+      </div>
+
+      {/* Help & Support */}
+      <div className="rounded-xl bg-white p-5 shadow-sm border border-gray-200">
+        <Link
+          to="/support"
+          className="flex items-center justify-between text-sm text-indigo-600 hover:text-indigo-700 transition-colors"
+        >
+          <span className="font-medium">💬 Help &amp; Support</span>
+          <span className="text-gray-400">→</span>
+        </Link>
+        <p className="text-xs text-gray-400 mt-1">
+          FAQs, contact info, and about PayWise
+        </p>
       </div>
     </div>
   );

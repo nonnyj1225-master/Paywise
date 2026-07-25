@@ -13,12 +13,49 @@ function error(message: string, status = 400): Response {
   return json({ error: message }, status);
 }
 
+const MAX_BODY_SIZE = 10 * 1024; // 10KB
+
 async function parseBody(req: Request): Promise<Record<string, unknown>> {
   const ct = req.headers.get("content-type") || "";
-  if (ct.includes("application/json")) {
-    return (await req.json()) as Record<string, unknown>;
+  if (!ct.includes("application/json")) {
+    return {};
   }
-  return {};
+  // Read body with size limit
+  const reader = req.body?.getReader();
+  if (!reader) return {};
+  const chunks: Uint8Array[] = [];
+  let totalSize = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalSize += value.length;
+    if (totalSize > MAX_BODY_SIZE) {
+      reader.cancel();
+      throw new Error("BODY_TOO_LARGE");
+    }
+    chunks.push(value);
+  }
+  if (chunks.length === 0) return {};
+  const text = new TextDecoder().decode(
+    chunks.length === 1 ? chunks[0] : Buffer.concat(chunks)
+  );
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+// ── input validation ──
+
+const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
+function validateEmail(email: string): string | null {
+  if (!email || email.length > 255) return "Invalid email format";
+  if (!EMAIL_REGEX.test(email)) return "Invalid email format";
+  return null; // valid
+}
+
+function validatePassword(password: string): string | null {
+  if (!password || password.length < 8) return "Password must be at least 8 characters";
+  if (password.length > 128) return "Password must be 128 characters or fewer";
+  return null; // valid
 }
 
 // ── token generation ──
@@ -69,20 +106,20 @@ export async function handleAuthRequest(req: Request): Promise<Response> {
 
   // POST /api/auth/register
   if (path === "/api/auth/register" && req.method === "POST") {
-    const body = await parseBody(req);
+    let body: Record<string, unknown>;
+    try {
+      body = await parseBody(req);
+    } catch {
+      return error("Request body too large", 413);
+    }
     const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
 
-    if (!email || !password) {
-      return error("Email and password are required", 400);
-    }
-    if (password.length < 6) {
-      return error("Password must be at least 6 characters", 400);
-    }
-    // Basic email format check
-    if (!email.includes("@") || !email.includes(".")) {
-      return error("Invalid email format", 400);
-    }
+    const emailErr = validateEmail(email);
+    if (emailErr) return error(emailErr, 400);
+
+    const passErr = validatePassword(password);
+    if (passErr) return error(passErr, 400);
 
     const db = getDb();
 
@@ -111,13 +148,21 @@ export async function handleAuthRequest(req: Request): Promise<Response> {
 
   // POST /api/auth/login
   if (path === "/api/auth/login" && req.method === "POST") {
-    const body = await parseBody(req);
+    let body: Record<string, unknown>;
+    try {
+      body = await parseBody(req);
+    } catch {
+      return error("Request body too large", 413);
+    }
     const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
 
     if (!email || !password) {
       return error("Email and password are required", 400);
     }
+
+    const emailErr = validateEmail(email);
+    if (emailErr) return error("Invalid email or password", 401);
 
     const db = getDb();
     const user = db
