@@ -87,6 +87,17 @@ function getDaysPerPeriod(frequency: string): number {
   }
 }
 
+function getFrequencyIntervalDays(frequency: string): number {
+  switch (frequency) {
+    case 'weekly': return 7;
+    case 'bi-weekly': return 14;
+    case 'semi-monthly': return 15;
+    case 'monthly': return 30;
+    case 'quarterly': return 90;
+    default: return 30;
+  }
+}
+
 function generatePayPeriods(
   startDate: Date,
   frequency: string,
@@ -499,6 +510,84 @@ async function handlePayPeriods(req: Request): Promise<Response> {
   return error("Method not allowed", 405);
 }
 
+// ── Single Pay Period (edit/delete) ──
+async function handlePayPeriod(req: Request, periodId: string): Promise<Response> {
+  const db = getDb();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
+
+  // GET /api/pay-periods/:id — fetch single period
+  if (req.method === "GET") {
+    const row = db.query("SELECT * FROM pay_periods WHERE id = ? AND user_id = ?")
+      .get(Number(periodId), userId);
+    if (!row) return error("Pay period not found", 404);
+    return json({ pay_period: row });
+  }
+
+  // PUT /api/pay-periods/:id — update hours_worked, start_date, end_date
+  if (req.method === "PUT") {
+    const existing = db.query("SELECT * FROM pay_periods WHERE id = ? AND user_id = ?")
+      .get(Number(periodId), userId) as Record<string, unknown> | null;
+    if (!existing) return error("Pay period not found", 404);
+
+    const body = (await parseBody(req)) as Record<string, unknown>;
+    const hoursWorked = body.hours_worked != null ? Number(body.hours_worked) : Number(existing.hours_worked);
+    const startDate = body.start_date != null ? String(body.start_date) : String(existing.start_date);
+    const endDate = body.end_date != null ? String(body.end_date) : String(existing.end_date);
+
+    // Recalculate gross/tax/net/insurance
+    const payProfileId = Number(existing.pay_profile_id);
+    const profile = db.query("SELECT * FROM pay_profiles WHERE id = ? AND user_id = ?")
+      .get(payProfileId, userId) as Record<string, unknown> | null;
+    if (!profile) return error("Associated pay profile not found", 400);
+
+    const hourlyRate = Number(profile.hourly_rate) || 0;
+    const grossPay = Math.round(hoursWorked * hourlyRate * 100) / 100;
+
+    let taxRate = 0;
+    if (profile.custom_tax_rate != null) {
+      taxRate = Number(profile.custom_tax_rate);
+    } else {
+      taxRate = estimateTaxRate(String(profile.region || ""));
+    }
+
+    const deductions = db.query("SELECT * FROM insurance_deductions WHERE user_id = ?").all(userId) as Array<Record<string, unknown>>;
+    let insuranceTotal = 0;
+    for (const d of deductions) {
+      if (d.per_pay_period) {
+        const pct = Number(d.percentage) || 0;
+        const fixed = d.fixed_amount != null ? Number(d.fixed_amount) : 0;
+        insuranceTotal += (grossPay * pct / 100) + fixed;
+      }
+    }
+
+    const taxAmount = Math.round(grossPay * taxRate * 100) / 100;
+    const netPay = Math.round((grossPay - taxAmount - insuranceTotal) * 100) / 100;
+
+    db.run(
+      `UPDATE pay_periods SET hours_worked=?, gross_pay=?, tax_amount=?, net_pay=?, insurance_deductions=?, start_date=?, end_date=?
+       WHERE id=? AND user_id=?`,
+      [hoursWorked, grossPay, taxAmount, netPay, insuranceTotal, startDate, endDate, Number(periodId), userId]
+    );
+
+    const row = db.query("SELECT * FROM pay_periods WHERE id = ?").get(Number(periodId));
+    return json({ pay_period: row });
+  }
+
+  // DELETE /api/pay-periods/:id
+  if (req.method === "DELETE") {
+    const existing = db.query("SELECT * FROM pay_periods WHERE id = ? AND user_id = ?")
+      .get(Number(periodId), userId);
+    if (!existing) return error("Pay period not found", 404);
+
+    db.run("DELETE FROM pay_periods WHERE id = ? AND user_id = ?", [Number(periodId), userId]);
+    return json({ deleted: true });
+  }
+
+  return error("Method not allowed", 405);
+}
+
 // =============================================================================
 // Bills — scoped to authenticated user
 // =============================================================================
@@ -510,7 +599,11 @@ async function handleBills(req: Request, billId?: string): Promise<Response> {
   const userId = uid.userId;
 
   if (req.method === "GET") {
-    const rows = db.query("SELECT * FROM bills WHERE user_id = ? ORDER BY due_date ASC").all(userId);
+    const url = new URL(req.url);
+    const includeDeleted = url.searchParams.get("include_deleted") === "true";
+    const rows = includeDeleted
+      ? db.query("SELECT * FROM bills WHERE user_id = ? ORDER BY due_date ASC").all(userId)
+      : db.query("SELECT * FROM bills WHERE user_id = ? AND deleted_at IS NULL ORDER BY due_date ASC").all(userId);
     return json({ bills: rows });
   }
 
@@ -522,12 +615,13 @@ async function handleBills(req: Request, billId?: string): Promise<Response> {
     const category = String(body.category || "other");
     const priority = Number(body.priority) || 3;
     const recurring = body.recurring ? 1 : 0;
+    const frequency = String(body.frequency || "monthly");
 
     if (!name || !dueDate) return error("Name and due_date are required", 400);
 
     db.run(
-      `INSERT INTO bills (user_id, name, amount, due_date, category, priority, recurring) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [userId, name, amount, dueDate, category, priority, recurring]
+      `INSERT INTO bills (user_id, name, amount, due_date, category, priority, recurring, frequency) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, name, amount, dueDate, category, priority, recurring, frequency]
     );
 
     const row = db.query("SELECT * FROM bills WHERE id = last_insert_rowid()").get();
@@ -539,16 +633,20 @@ async function handleBills(req: Request, billId?: string): Promise<Response> {
     const existing = db.query("SELECT * FROM bills WHERE id = ? AND user_id = ?").get(Number(billId), userId);
     if (!existing) return error("Bill not found", 404);
 
-    const name = String(body.name ?? (existing as Record<string, unknown>).name);
-    const amount = Number(body.amount ?? (existing as Record<string, unknown>).amount);
-    const dueDate = String(body.due_date ?? (existing as Record<string, unknown>).due_date);
-    const category = String(body.category ?? (existing as Record<string, unknown>).category);
-    const priority = Number(body.priority ?? (existing as Record<string, unknown>).priority);
-    const recurring = body.recurring != null ? (body.recurring ? 1 : 0) : (existing as Record<string, unknown>).recurring;
+    const ex = existing as Record<string, unknown>;
+    const name = String(body.name ?? ex.name);
+    const amount = Number(body.amount ?? ex.amount);
+    const dueDate = String(body.due_date ?? ex.due_date);
+    const category = String(body.category ?? ex.category);
+    const priority = Number(body.priority ?? ex.priority);
+    const recurring = body.recurring != null ? (body.recurring ? 1 : 0) : ex.recurring;
+    const frequency = body.frequency != null ? String(body.frequency) : String(ex.frequency || "monthly");
+    // Support undo: setting deleted_at to null
+    const deletedAt = body.deleted_at !== undefined ? (body.deleted_at === null ? null : String(body.deleted_at)) : ex.deleted_at;
 
     db.run(
-      `UPDATE bills SET name=?, amount=?, due_date=?, category=?, priority=?, recurring=?, updated_at=datetime('now') WHERE id=? AND user_id=?`,
-      [name, amount, dueDate, category, priority, recurring, Number(billId), userId]
+      `UPDATE bills SET name=?, amount=?, due_date=?, category=?, priority=?, recurring=?, frequency=?, deleted_at=?, updated_at=datetime('now') WHERE id=? AND user_id=?`,
+      [name, amount, dueDate, category, priority, recurring, frequency, deletedAt, Number(billId), userId]
     );
 
     const row = db.query("SELECT * FROM bills WHERE id = ?").get(Number(billId));
@@ -556,11 +654,12 @@ async function handleBills(req: Request, billId?: string): Promise<Response> {
   }
 
   if (req.method === "DELETE" && billId) {
-    const existing = db.query("SELECT * FROM bills WHERE id = ? AND user_id = ?").get(Number(billId), userId);
+    const existing = db.query("SELECT * FROM bills WHERE id = ? AND user_id = ? AND deleted_at IS NULL").get(Number(billId), userId);
     if (!existing) return error("Bill not found", 404);
 
-    db.run("DELETE FROM bills WHERE id = ? AND user_id = ?", [Number(billId), userId]);
-    return json({ deleted: true });
+    // Soft delete: set deleted_at instead of removing
+    db.run("UPDATE bills SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?", [Number(billId), userId]);
+    return json({ deleted: true, bill_id: Number(billId) });
   }
 
   return error("Method not allowed", 405);
@@ -707,11 +806,72 @@ async function handleProjection(_req: Request): Promise<Response> {
     deductions
   );
 
-  const allBills = db.query("SELECT * FROM bills WHERE user_id = ? ORDER BY due_date ASC").all(userId) as Array<{
-    id: number; name: string; amount: number; due_date: string; category: string; priority: number; recurring: number;
+  const allBills = db.query("SELECT * FROM bills WHERE user_id = ? AND deleted_at IS NULL ORDER BY due_date ASC").all(userId) as Array<{
+    id: number; name: string; amount: number; due_date: string; category: string; priority: number; recurring: number; frequency: string;
   }>;
 
-  const scoredBills = allBills.map(bill => ({
+  // Expand recurring bills into occurrences within the projection window
+  interface BillOccurrence {
+    id: number;
+    originalId: number;
+    name: string;
+    amount: number;
+    due_date: string;
+    category: string;
+    priority: number;
+    isOccurrence: boolean; // true if this is a generated occurrence
+    occurrenceIndex: number;
+  }
+
+  const billOccurrences: BillOccurrence[] = [];
+  const projectionEnd = new Date(today);
+  projectionEnd.setDate(projectionEnd.getDate() + projectionDays + 7); // buffer
+
+  for (const bill of allBills) {
+    if (bill.recurring && bill.frequency && bill.frequency !== 'monthly') {
+      // Generate occurrences based on frequency
+      const intervalDays = getFrequencyIntervalDays(bill.frequency);
+      const baseDueDate = new Date(bill.due_date + "T00:00:00");
+      let occurrenceDate = new Date(baseDueDate);
+      let occIndex = 0;
+
+      while (occurrenceDate <= projectionEnd) {
+        // Only include occurrences that are >= today or within a reasonable past window
+        if (occurrenceDate >= new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000)) {
+          billOccurrences.push({
+            id: -(bill.id * 1000 + occIndex), // negative compound IDs for occurrences
+            originalId: bill.id,
+            name: bill.name + (occIndex > 0 ? ` (#${occIndex + 1})` : ''),
+            amount: bill.amount,
+            due_date: occurrenceDate.toISOString().split("T")[0],
+            category: bill.category,
+            priority: bill.priority,
+            isOccurrence: true,
+            occurrenceIndex: occIndex,
+          });
+        }
+        // Advance by frequency interval
+        occurrenceDate = new Date(occurrenceDate);
+        occurrenceDate.setDate(occurrenceDate.getDate() + intervalDays);
+        occIndex++;
+      }
+    } else {
+      // Non-recurring or monthly: treat as single occurrence
+      billOccurrences.push({
+        id: bill.id,
+        originalId: bill.id,
+        name: bill.name,
+        amount: bill.amount,
+        due_date: bill.due_date,
+        category: bill.category,
+        priority: bill.priority,
+        isOccurrence: false,
+        occurrenceIndex: 0,
+      });
+    }
+  }
+
+  const scoredBills = billOccurrences.map(bill => ({
     ...bill,
     score: scoreBill(bill, today),
   }));
@@ -1015,6 +1175,10 @@ export async function handleApiRequest(req: Request): Promise<Response> {
   }
   if (path === "/api/pay-periods") {
     return handlePayPeriods(req);
+  }
+  if (path.startsWith("/api/pay-periods/")) {
+    const periodId = path.split("/")[3];
+    return handlePayPeriod(req, periodId);
   }
   if (path === "/api/bills") {
     return handleBills(req);

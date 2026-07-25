@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { apiFetch } from "../lib/api";
+import ConfirmModal from "../components/ConfirmModal";
 
 interface Goal {
   id: number;
@@ -77,6 +78,9 @@ export default function Goals() {
   // Contribute state per card
   const [contributeAmounts, setContributeAmounts] = useState<Record<number, string>>({});
 
+  // Delete confirmation
+  const [deleteTarget, setDeleteTarget] = useState<Goal | null>(null);
+
   async function loadGoals() {
     try {
       const res = await apiFetch("/api/goals");
@@ -147,9 +151,9 @@ export default function Goals() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete this savings goal?")) return;
     try {
       await apiFetch(`/api/goals/${id}`, { method: "DELETE" });
+      setDeleteTarget(null);
       loadGoals();
     } catch (err) {
       console.error("Failed to delete goal:", err);
@@ -370,7 +374,7 @@ export default function Goals() {
                     ✏️
                   </button>
                   <button
-                    onClick={() => handleDelete(goal.id)}
+                    onClick={() => setDeleteTarget(goal)}
                     className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-500 hover:bg-red-50 hover:text-red-600 transition-colors"
                     title="Delete"
                   >
@@ -439,6 +443,15 @@ export default function Goals() {
           );
         })}
       </div>
+
+      {/* Delete confirmation modal */}
+      <ConfirmModal
+        open={deleteTarget !== null}
+        title="Delete Savings Goal"
+        message={`Delete "${deleteTarget?.name}"? Your progress will be lost.`}
+        onConfirm={() => deleteTarget && handleDelete(deleteTarget.id)}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

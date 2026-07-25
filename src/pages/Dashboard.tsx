@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { apiFetch } from "../lib/api";
+import ConfirmModal from "../components/ConfirmModal";
 
 interface PayProfile {
   id: number;
@@ -84,8 +85,7 @@ function getPayPeriodDates(
 
   switch (frequency) {
     case "weekly": {
-      // Start = most recent Monday, End = this coming Sunday
-      const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon...
+      const dayOfWeek = today.getDay();
       const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
       const monday = new Date(today);
       monday.setDate(today.getDate() - daysSinceMonday);
@@ -97,7 +97,6 @@ function getPayPeriodDates(
       };
     }
     case "bi-weekly": {
-      // Start = most recent Monday, End = start + 13 days
       const dayOfWeek = today.getDay();
       const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
       const monday = new Date(today);
@@ -110,7 +109,6 @@ function getPayPeriodDates(
       };
     }
     case "monthly": {
-      // Start = 1st of current month, End = last day of current month
       const first = new Date(today.getFullYear(), today.getMonth(), 1);
       const last = new Date(today.getFullYear(), today.getMonth() + 1, 0);
       return {
@@ -126,22 +124,6 @@ function getPayPeriodDates(
     }
   }
 }
-
-const US_STATE_NAMES: Record<string, string> = {
-  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas",
-  CA: "California", CO: "Colorado", CT: "Connecticut", DE: "Delaware",
-  FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho",
-  IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",
-  KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
-  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi",
-  MO: "Missouri", MT: "Montana", NE: "Nebraska", NV: "Nevada",
-  NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York",
-  NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
-  OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina",
-  SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah",
-  VT: "Vermont", VA: "Virginia", WA: "Washington", WV: "West Virginia",
-  WI: "Wisconsin", WY: "Wyoming", DC: "District of Columbia",
-};
 
 export default function Dashboard() {
   const [profile, setProfile] = useState<PayProfile | null>(null);
@@ -159,6 +141,17 @@ export default function Dashboard() {
   const [submitting, setSubmitting] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+
+  // Edit pay period state
+  const [editingPeriodId, setEditingPeriodId] = useState<number | null>(null);
+  const [editHours, setEditHours] = useState("");
+  const [editStartDate, setEditStartDate] = useState("");
+  const [editEndDate, setEditEndDate] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState("");
+
+  // Delete confirmation
+  const [deletePeriodTarget, setDeletePeriodTarget] = useState<PayPeriod | null>(null);
 
   // Update date defaults when profile changes
   useEffect(() => {
@@ -224,7 +217,6 @@ export default function Dashboard() {
         return;
       }
 
-      // Reset form and refresh
       setHoursWorked("");
       setSuccessMsg("Paycheck calculated! See your updated projection below.");
       setTimeout(() => setSuccessMsg(""), 5000);
@@ -235,6 +227,71 @@ export default function Dashboard() {
       setTimeout(() => setErrorMsg(""), 4000);
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  // ── Edit pay period ──
+  function startEditPeriod(period: PayPeriod) {
+    setEditingPeriodId(period.id);
+    setEditHours(String(period.hours_worked));
+    setEditStartDate(period.start_date);
+    setEditEndDate(period.end_date);
+    setEditError("");
+  }
+
+  function cancelEdit() {
+    setEditingPeriodId(null);
+    setEditHours("");
+    setEditStartDate("");
+    setEditEndDate("");
+    setEditError("");
+  }
+
+  async function handleSaveEdit() {
+    if (!editingPeriodId) return;
+    const hours = parseFloat(editHours);
+    if (isNaN(hours) || hours < 0) {
+      setEditError("Please enter a valid number of hours.");
+      return;
+    }
+
+    setSavingEdit(true);
+    setEditError("");
+
+    try {
+      const res = await apiFetch(`/api/pay-periods/${editingPeriodId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hours_worked: hours,
+          start_date: editStartDate,
+          end_date: editEndDate,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setEditError(data.error || "Failed to update pay period.");
+        return;
+      }
+
+      cancelEdit();
+      await loadDashboard();
+    } catch (err) {
+      console.error("Failed to update pay period:", err);
+      setEditError("Network error. Please try again.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function handleDeletePeriod(period: PayPeriod) {
+    try {
+      await apiFetch(`/api/pay-periods/${period.id}`, { method: "DELETE" });
+      setDeletePeriodTarget(null);
+      await loadDashboard();
+    } catch (err) {
+      console.error("Failed to delete pay period:", err);
     }
   }
 
@@ -358,9 +415,26 @@ export default function Dashboard() {
           {/* Last Paycheck Card */}
           {lastPeriod && (
             <div className="rounded-xl bg-white p-5 shadow-sm border border-gray-200">
-              <p className="text-sm font-medium text-gray-500 uppercase tracking-wide">
-                Last Paycheck
-              </p>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-gray-500 uppercase tracking-wide">
+                  Last Paycheck
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => startEditPeriod(lastPeriod)}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 transition-colors"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => setDeletePeriodTarget(lastPeriod)}
+                    className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+                    title="Delete"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
               <p className="mt-1 text-3xl font-bold text-gray-900">
                 ${lastPeriod.net_pay.toFixed(2)}
               </p>
@@ -385,6 +459,115 @@ export default function Dashboard() {
                   <span className="block text-xs">Hours</span>
                   {lastPeriod.hours_worked}h
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Recorded Pay Period History (editable) ── */}
+          {periods.length > 0 && (
+            <div className="rounded-xl bg-white p-5 shadow-sm border border-gray-200">
+              <p className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-3">
+                Paycheck History
+              </p>
+
+              {/* Edit inline form */}
+              {editingPeriodId !== null && (
+                <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4 space-y-3">
+                  <h4 className="text-sm font-semibold text-indigo-800">Edit Pay Period</h4>
+
+                  {editError && (
+                    <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+                      {editError}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Hours Worked</label>
+                    <input
+                      type="number"
+                      step="0.25"
+                      min="0"
+                      value={editHours}
+                      onChange={(e) => setEditHours(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Start Date</label>
+                      <input
+                        type="date"
+                        value={editStartDate}
+                        onChange={(e) => setEditStartDate(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">End Date</label>
+                      <input
+                        type="date"
+                        value={editEndDate}
+                        onChange={(e) => setEditEndDate(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveEdit}
+                      disabled={savingEdit}
+                      className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                    >
+                      {savingEdit ? "Saving..." : "Save Changes"}
+                    </button>
+                    <button
+                      onClick={cancelEdit}
+                      className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {periods.map((pp) => (
+                  <div
+                    key={pp.id}
+                    className={`flex items-center justify-between rounded-lg border p-3 text-sm ${
+                      editingPeriodId === pp.id
+                        ? "border-indigo-300 bg-indigo-50"
+                        : "border-gray-100 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
+                    }`}
+                    onClick={() => {
+                      if (editingPeriodId !== pp.id) startEditPeriod(pp);
+                    }}
+                  >
+                    <div>
+                      <p className="text-gray-600">
+                        {new Date(pp.start_date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        {" — "}
+                        {new Date(pp.end_date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        {pp.hours_worked}h · Gross: ${pp.gross_pay.toFixed(2)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-gray-900">${pp.net_pay.toFixed(2)}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeletePeriodTarget(pp);
+                        }}
+                        className="text-gray-400 hover:text-red-500 transition-colors ml-1"
+                        title="Delete"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -547,6 +730,15 @@ export default function Dashboard() {
               </div>
             </div>
           )}
+
+          {/* Delete Pay Period Confirmation */}
+          <ConfirmModal
+            open={deletePeriodTarget !== null}
+            title="Delete Paycheck Record"
+            message="Delete this paycheck record? Projections will be recalculated."
+            onConfirm={() => deletePeriodTarget && handleDeletePeriod(deletePeriodTarget)}
+            onCancel={() => setDeletePeriodTarget(null)}
+          />
         </>
       )}
     </div>

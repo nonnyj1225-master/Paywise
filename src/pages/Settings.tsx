@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
+import ConfirmModal from "../components/ConfirmModal";
 
 interface PayProfile {
   id: number;
@@ -67,6 +68,10 @@ export default function Settings() {
   const [dedFixed, setDedFixed] = useState("");
   const [dedActualDeducted, setDedActualDeducted] = useState("");
   const [dedReferenceGross, setDedReferenceGross] = useState("");
+
+  // Delete confirmations
+  const [deleteProfileTarget, setDeleteProfileTarget] = useState<PayProfile | null>(null);
+  const [deleteDeductionTarget, setDeleteDeductionTarget] = useState<InsuranceDeduction | null>(null);
 
   async function loadData() {
     try {
@@ -179,7 +184,6 @@ export default function Settings() {
   }
 
   async function deleteProfile(id: number) {
-    if (!confirm("Delete this job? This cannot be undone.")) return;
     try {
       const res = await apiFetch(`/api/profiles/${id}`, { method: "DELETE" });
       const data = await res.json();
@@ -187,6 +191,7 @@ export default function Settings() {
         setMessage("Error: " + data.error);
         setTimeout(() => setMessage(""), 3000);
       } else {
+        setDeleteProfileTarget(null);
         loadData();
       }
     } catch (err) {
@@ -234,6 +239,7 @@ export default function Settings() {
   async function deleteDeduction(id: number) {
     try {
       await apiFetch(`/api/insurance-deductions/${id}`, { method: "DELETE" });
+      setDeleteDeductionTarget(null);
       loadData();
     } catch (err) {
       console.error("Failed to delete deduction:", err);
@@ -342,7 +348,7 @@ export default function Settings() {
                     </button>
                     {profiles.length > 1 && (
                       <button
-                        onClick={() => deleteProfile(profile.id)}
+                        onClick={() => setDeleteProfileTarget(profile)}
                         className="rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 px-2 py-1.5 text-xs transition-colors"
                         title="Delete"
                       >
@@ -527,7 +533,7 @@ export default function Settings() {
                   </span>
                 </div>
                 <button
-                  onClick={() => deleteDeduction(d.id)}
+                  onClick={() => setDeleteDeductionTarget(d)}
                   className="text-gray-400 hover:text-red-500 transition-colors text-xs ml-2"
                   title="Delete"
                 >
@@ -664,6 +670,24 @@ export default function Settings() {
           FAQs, contact info, and about PayWise
         </p>
       </div>
+
+      {/* Delete Profile Confirmation */}
+      <ConfirmModal
+        open={deleteProfileTarget !== null}
+        title="Delete Job"
+        message={`Delete "${deleteProfileTarget?.label}"? All pay periods for this job will be orphaned.`}
+        onConfirm={() => deleteProfileTarget && deleteProfile(deleteProfileTarget.id)}
+        onCancel={() => setDeleteProfileTarget(null)}
+      />
+
+      {/* Delete Deduction Confirmation */}
+      <ConfirmModal
+        open={deleteDeductionTarget !== null}
+        title="Remove Deduction"
+        message={`Remove "${deleteDeductionTarget?.name}"? Net pay calculations will change.`}
+        onConfirm={() => deleteDeductionTarget && deleteDeduction(deleteDeductionTarget.id)}
+        onCancel={() => setDeleteDeductionTarget(null)}
+      />
     </div>
   );
 }

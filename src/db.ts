@@ -12,6 +12,7 @@ export function getDb(): Database {
     initSchema(db);
     migrateAuth(db);
     migratePayProfiles(db);
+    migrateBillsFrequencyAndSoftDelete(db);
     migrateSavingsGoals(db);
     addIndexes(db);
     seedResources(db);
@@ -159,6 +160,23 @@ function migratePayProfiles(db: Database) {
   db.run("UPDATE pay_profiles SET label = 'My Job' WHERE label IS NULL OR label = ''");
   db.run("UPDATE pay_profiles SET is_active = 1 WHERE is_active IS NULL");
   db.run("UPDATE pay_profiles SET started_at = created_at WHERE started_at IS NULL");
+}
+
+// ── Migration: bills frequency + soft delete ──
+function migrateBillsFrequencyAndSoftDelete(db: Database) {
+  const tableInfo = db
+    .query("PRAGMA table_info(bills)")
+    .all() as Array<{ name: string }>;
+
+  const hasFrequency = tableInfo.some((col) => col.name === "frequency");
+  if (!hasFrequency) {
+    db.run("ALTER TABLE bills ADD COLUMN frequency TEXT NOT NULL DEFAULT 'monthly'");
+  }
+
+  const hasDeletedAt = tableInfo.some((col) => col.name === "deleted_at");
+  if (!hasDeletedAt) {
+    db.run("ALTER TABLE bills ADD COLUMN deleted_at TEXT");
+  }
 }
 
 // ── Migration: savings_goals table ──
