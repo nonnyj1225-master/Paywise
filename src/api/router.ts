@@ -870,6 +870,114 @@ async function handleResources(_req: Request): Promise<Response> {
 }
 
 // =============================================================================
+// Savings Goals — scoped to authenticated user
+// =============================================================================
+
+async function handleGoals(req: Request, goalId?: string): Promise<Response> {
+  const db = getDb();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
+
+  // GET /api/goals — list all goals
+  if (req.method === "GET") {
+    const rows = db.query(
+      "SELECT * FROM savings_goals WHERE user_id = ? ORDER BY created_at DESC"
+    ).all(userId);
+    return json({ goals: rows });
+  }
+
+  // Routes with :id — check these first
+  if (goalId) {
+    // POST /api/goals/:id/contribute — add funds to a goal
+    if (req.method === "POST" && req.url.endsWith("/contribute")) {
+      const existing = db.query("SELECT * FROM savings_goals WHERE id = ? AND user_id = ?")
+        .get(Number(goalId), userId) as Record<string, unknown> | null;
+      if (!existing) return error("Goal not found", 404);
+
+      const body = (await parseBody(req)) as Record<string, unknown>;
+      const amount = Number(body.amount) || 0;
+      if (amount <= 0) return error("Amount must be greater than 0", 400);
+
+      const current = Number(existing.current_amount);
+      const target = Number(existing.target_amount);
+      const newAmount = Math.min(current + amount, target);
+
+      db.run(
+        "UPDATE savings_goals SET current_amount = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?",
+        [newAmount, Number(goalId), userId]
+      );
+
+      const row = db.query("SELECT * FROM savings_goals WHERE id = ?").get(Number(goalId));
+      return json({ goal: row });
+    }
+
+    // PUT /api/goals/:id — update a goal
+    if (req.method === "PUT") {
+      const existing = db.query("SELECT * FROM savings_goals WHERE id = ? AND user_id = ?")
+        .get(Number(goalId), userId) as Record<string, unknown> | null;
+      if (!existing) return error("Goal not found", 404);
+
+      const body = (await parseBody(req)) as Record<string, unknown>;
+      const ex = existing;
+      const name = body.name !== undefined ? String(body.name).trim() : String(ex.name);
+      const targetAmount = body.target_amount !== undefined ? Number(body.target_amount) : Number(ex.target_amount);
+      const currentAmount = body.current_amount !== undefined ? Number(body.current_amount) : Number(ex.current_amount);
+      const category = body.category !== undefined ? String(body.category) : String(ex.category);
+      const targetDate = body.target_date !== undefined ? (body.target_date ? String(body.target_date) : null) : (ex.target_date != null ? String(ex.target_date) : null);
+      const icon = body.icon !== undefined ? String(body.icon) : String(ex.icon || "🎯");
+
+      if (!name) return error("Name is required", 400);
+      if (targetAmount <= 0) return error("Target amount must be greater than 0", 400);
+
+      db.run(
+        `UPDATE savings_goals SET name=?, target_amount=?, current_amount=?, category=?, target_date=?, icon=?, updated_at=datetime('now')
+         WHERE id=? AND user_id=?`,
+        [name, targetAmount, currentAmount, category, targetDate, icon, Number(goalId), userId]
+      );
+
+      const row = db.query("SELECT * FROM savings_goals WHERE id = ?").get(Number(goalId));
+      return json({ goal: row });
+    }
+
+    // DELETE /api/goals/:id — delete a goal
+    if (req.method === "DELETE") {
+      const existing = db.query("SELECT * FROM savings_goals WHERE id = ? AND user_id = ?")
+        .get(Number(goalId), userId);
+      if (!existing) return error("Goal not found", 404);
+
+      db.run("DELETE FROM savings_goals WHERE id = ? AND user_id = ?", [Number(goalId), userId]);
+      return json({ deleted: true });
+    }
+  }
+
+  // POST /api/goals — create a new goal (no :id)
+  if (req.method === "POST") {
+    const body = (await parseBody(req)) as Record<string, unknown>;
+    const name = String(body.name || "").trim();
+    const targetAmount = Number(body.target_amount) || 0;
+    const currentAmount = Number(body.current_amount) || 0;
+    const category = String(body.category || "other");
+    const targetDate = body.target_date ? String(body.target_date) : null;
+    const icon = String(body.icon || "🎯");
+
+    if (!name) return error("Name is required", 400);
+    if (targetAmount <= 0) return error("Target amount must be greater than 0", 400);
+
+    db.run(
+      `INSERT INTO savings_goals (user_id, name, target_amount, current_amount, category, target_date, icon)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [userId, name, targetAmount, currentAmount, category, targetDate, icon]
+    );
+
+    const row = db.query("SELECT * FROM savings_goals WHERE id = last_insert_rowid()").get();
+    return json({ goal: row }, 201);
+  }
+
+  return error("Method not allowed", 405);
+}
+
+// =============================================================================
 // Router
 // =============================================================================
 
@@ -924,6 +1032,17 @@ export async function handleApiRequest(req: Request): Promise<Response> {
   }
   if (path === "/api/projection") {
     return handleProjection(req);
+  }
+  if (path.startsWith("/api/goals/") && path.endsWith("/contribute")) {
+    const goalId = path.split("/")[3];
+    return handleGoals(req, goalId);
+  }
+  if (path.startsWith("/api/goals/")) {
+    const goalId = path.split("/")[3];
+    return handleGoals(req, goalId);
+  }
+  if (path === "/api/goals") {
+    return handleGoals(req);
   }
 
   return error("Not found", 404);

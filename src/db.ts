@@ -12,6 +12,7 @@ export function getDb(): Database {
     initSchema(db);
     migrateAuth(db);
     migratePayProfiles(db);
+    migrateSavingsGoals(db);
     addIndexes(db);
     seedResources(db);
   }
@@ -158,6 +159,25 @@ function migratePayProfiles(db: Database) {
   db.run("UPDATE pay_profiles SET label = 'My Job' WHERE label IS NULL OR label = ''");
   db.run("UPDATE pay_profiles SET is_active = 1 WHERE is_active IS NULL");
   db.run("UPDATE pay_profiles SET started_at = created_at WHERE started_at IS NULL");
+}
+
+// ── Migration: savings_goals table ──
+function migrateSavingsGoals(db: Database) {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS savings_goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      target_amount REAL NOT NULL,
+      current_amount REAL DEFAULT 0,
+      category TEXT DEFAULT 'other',
+      target_date TEXT,
+      icon TEXT DEFAULT '🎯',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+  `);
 }
 
 // ── Performance indexes on user_id columns ──
