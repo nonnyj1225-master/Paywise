@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import ConfirmModal from "../components/ConfirmModal";
+import { useTheme } from "../context/ThemeContext";
 
 interface PayProfile {
   id: number;
@@ -43,6 +44,7 @@ const US_STATES: [string, string][] = [
 const NO_TAX_STATES = new Set(["FL", "TX", "WA", "NV", "SD", "WY", "AK", "TN", "NH"]);
 
 export default function Settings() {
+  const { theme, setTheme, themes } = useTheme();
   const [profiles, setProfiles] = useState<PayProfile[]>([]);
   const [activeProfile, setActiveProfile] = useState<PayProfile | null>(null);
   const [deductions, setDeductions] = useState<InsuranceDeduction[]>([]);
@@ -266,6 +268,32 @@ export default function Settings() {
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold text-gray-900">Settings</h2>
+
+      {/* Appearance */}
+      <section className="rounded-xl bg-white p-5 shadow-sm border border-gray-200">
+        <h3 className="text-lg font-semibold text-gray-900">Appearance</h3>
+        <p className="mt-1 text-sm text-gray-500">Choose a theme that feels right for you.</p>
+        <div className="mt-4 grid grid-cols-5 gap-2 sm:gap-4">
+          {(Object.entries(themes) as [keyof typeof themes, (typeof themes)[keyof typeof themes]][]).map(([key, option]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTheme(key)}
+              aria-label={`Use ${option.name} theme`}
+              aria-pressed={theme === key}
+              className="flex min-w-0 flex-col items-center gap-2 text-center"
+            >
+              <span
+                className={`flex h-11 w-11 items-center justify-center rounded-full shadow-sm transition-all ${theme === key ? "ring-4 ring-offset-2" : "ring-1 ring-gray-200"}`}
+                style={{ backgroundColor: option.primary, ...(theme === key ? { outlineColor: option.accent } : {}) }}
+              >
+                {theme === key && <span className="text-lg font-bold text-white">✓</span>}
+              </span>
+              <span className="text-[11px] font-medium leading-tight text-gray-600 sm:text-xs">{option.name}</span>
+            </button>
+          ))}
+        </div>
+      </section>
 
       {/* Job History */}
       <div className="rounded-xl bg-white p-5 shadow-sm border border-gray-200 space-y-4">

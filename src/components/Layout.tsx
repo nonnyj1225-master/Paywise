@@ -1,6 +1,7 @@
 import { Outlet, NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import NonnyBot from "./NonnyBot";
+import { useTheme } from "../context/ThemeContext";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: "📊" },
@@ -12,10 +13,11 @@ const navItems = [
 
 export default function Layout() {
   const { user, logout } = useAuth();
+  const { theme } = useTheme();
 
   return (
     <div className="flex min-h-dvh flex-col bg-gray-50">
-      <header className="bg-indigo-600 px-4 py-3 text-white shadow">
+      <header className="bg-indigo-600 px-4 py-3 text-white shadow" style={{ backgroundColor: "var(--color-primary)" }}>
         <div className="mx-auto flex max-w-2xl items-center justify-between">
           <h1 className="text-xl font-bold tracking-tight">PayWise</h1>
           <div className="flex items-center gap-3">
@@ -40,7 +42,7 @@ export default function Layout() {
         </div>
       </main>
 
-      <nav className="border-t border-gray-200 bg-white px-2 pb-safe">
+      <nav className="theme-nav border-t border-gray-200 bg-white px-2 pb-safe" data-theme={theme}>
         <div className="mx-auto flex max-w-2xl justify-around">
           {navItems.map((item) => (
             <NavLink

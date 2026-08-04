@@ -74,6 +74,14 @@ function matchIntent(input: string): { text: string; path?: string } | null {
     };
   }
 
+  // Appearance / themes
+  if (/\b(theme|themes|change theme|color|dark mode|light mode|appearance)\b/.test(q)) {
+    return {
+      text: "I can help with that! Head to Settings and pick from 5 themes: Classic Indigo, Calm Ocean, Fresh Forest, Warm Sunset, or Midnight Dark. Tap your favorite!",
+      path: "/settings",
+    };
+  }
+
   // Settings
   if (/\b(settings|profile|account|rate|tax|insurance|deduction)\b/.test(q)) {
     return {

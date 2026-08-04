@@ -4,8 +4,23 @@
   html,
   body {
     @apply bg-gray-50 text-gray-900 antialiased;
+    background: var(--color-bg, #f9fafb);
+    color: var(--color-text, #111827);
   }
 }
+
+/* PayWise theme tokens. Tailwind utility overrides are injected by ThemeProvider. */
+.theme-nav { background: var(--color-primary) !important; }
+.theme-nav a { color: rgba(255, 255, 255, 0.72); }
+.theme-nav a[aria-current="page"] { color: #fff; }
+.theme-nav a:hover { color: #fff; }
+:root {
+  --color-primary: #4f46e5;
+  --color-bg: #f9fafb;
+  --color-accent: #6366f1;
+  --color-text: #111827;
+}
+
 
 /* Safe area padding for mobile bottom nav */
 .pb-safe {
