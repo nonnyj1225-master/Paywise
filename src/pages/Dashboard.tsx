@@ -20,6 +20,7 @@ interface PayPeriod {
   insurance_deductions: number;
   start_date: string;
   end_date: string;
+  active: number;
 }
 
 interface ProjectedBill {
@@ -295,6 +296,30 @@ export default function Dashboard() {
     }
   }
 
+  async function handleTogglePeriod(period: PayPeriod) {
+    try {
+      const res = await apiFetch(`/api/pay-periods/${period.id}/toggle`, { method: "PUT" });
+      if (!res.ok) throw new Error("Failed to toggle pay period");
+      await loadDashboard();
+    } catch (err) {
+      console.error("Failed to toggle pay period:", err);
+    }
+  }
+
+  async function handleIncludeAll() {
+    try {
+      await Promise.all(
+        periods.filter((period) => period.active === 0).map((period) =>
+          apiFetch(`/api/pay-periods/${period.id}/toggle`, { method: "PUT" })
+        )
+      );
+      await loadDashboard();
+    } catch (err) {
+      console.error("Failed to include all pay periods:", err);
+    }
+  }
+
+  const inactivePeriods = periods.filter((period) => period.active === 0);
   const lastPeriod = periods[0];
   const firstProjected = projection?.payPeriods?.[0];
   const hasBills = projection?.summary && projection.summary.totalBills > 0;
@@ -535,6 +560,7 @@ export default function Dashboard() {
                   <div
                     key={pp.id}
                     className={`flex items-center justify-between rounded-lg border p-3 text-sm ${
+                      pp.active === 0 ? "opacity-50" : ""} ${
                       editingPeriodId === pp.id
                         ? "border-indigo-300 bg-indigo-50"
                         : "border-gray-100 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
@@ -551,9 +577,23 @@ export default function Dashboard() {
                       </p>
                       <p className="text-xs text-gray-400">
                         {pp.hours_worked}h · Gross: ${pp.gross_pay.toFixed(2)}
+                        {pp.active === 0 && <span className="ml-1">(excluded)</span>}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1.5 text-xs text-gray-500" onClick={(e) => e.stopPropagation()}>
+                        <span>Include</span>
+                        <span className="relative inline-block h-5 w-9">
+                          <input
+                            type="checkbox"
+                            checked={pp.active === 1}
+                            onChange={() => handleTogglePeriod(pp)}
+                            className="peer sr-only"
+                            aria-label={`Include paycheck from ${pp.start_date}`}
+                          />
+                          <span className="absolute inset-0 cursor-pointer rounded-full bg-gray-300 transition-colors peer-checked:bg-indigo-600 after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-4" />
+                        </span>
+                      </label>
                       <span className="font-semibold text-gray-900">${pp.net_pay.toFixed(2)}</span>
                       <button
                         onClick={(e) => {
@@ -595,6 +635,14 @@ export default function Dashboard() {
               <p className="text-sm text-gray-400 mt-1">
                 Head to <strong>Bills</strong> to add your recurring expenses and get a personalized plan.
               </p>
+            </div>
+          )}
+
+          {/* What-if mode banner */}
+          {inactivePeriods.length > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              <span>⚠️ {inactivePeriods.length} paycheck{inactivePeriods.length !== 1 ? "s" : ""} excluded from projections.</span>
+              <button onClick={handleIncludeAll} className="font-semibold underline hover:text-amber-900">Include all</button>
             </div>
           )}
 
@@ -714,6 +762,9 @@ export default function Dashboard() {
                         {new Date(pp.startDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
                         {" — "}
                         {new Date(pp.endDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        {periods.some((period) => period.active === 0 && period.start_date === pp.startDate && period.end_date === pp.endDate) && (
+                          <span className="ml-1 text-gray-400">(excluded)</span>
+                        )}
                       </span>
                       <span className="text-xs text-gray-400 ml-2">
                         ({pp.bills.length} bill{pp.bills.length !== 1 ? "s" : ""})

@@ -12,6 +12,7 @@ export function getDb(): Database {
     initSchema(db);
     migrateAuth(db);
     migratePayProfiles(db);
+    migratePayPeriods(db);
     migrateBillsFrequencyAndSoftDelete(db);
     migrateSavingsGoals(db);
     addIndexes(db);
@@ -58,6 +59,7 @@ function initSchema(db: Database) {
       insurance_deductions REAL NOT NULL DEFAULT 0,
       start_date TEXT NOT NULL,
       end_date TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (pay_profile_id) REFERENCES pay_profiles(id)
@@ -160,6 +162,19 @@ function migratePayProfiles(db: Database) {
   db.run("UPDATE pay_profiles SET label = 'My Job' WHERE label IS NULL OR label = ''");
   db.run("UPDATE pay_profiles SET is_active = 1 WHERE is_active IS NULL");
   db.run("UPDATE pay_profiles SET started_at = created_at WHERE started_at IS NULL");
+}
+
+// ── Migration: pay period what-if inclusion ──
+function migratePayPeriods(db: Database) {
+  const tableInfo = db
+    .query("PRAGMA table_info(pay_periods)")
+    .all() as Array<{ name: string }>;
+
+  if (!tableInfo.some((col) => col.name === "active")) {
+    db.run("ALTER TABLE pay_periods ADD COLUMN active INTEGER NOT NULL DEFAULT 1");
+  }
+
+  db.run("UPDATE pay_periods SET active = 1 WHERE active IS NULL");
 }
 
 // ── Migration: bills frequency + soft delete ──

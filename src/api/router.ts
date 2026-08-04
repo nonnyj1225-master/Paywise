@@ -511,6 +511,23 @@ async function handlePayPeriods(req: Request): Promise<Response> {
 }
 
 // ── Single Pay Period (edit/delete) ──
+async function handleTogglePayPeriod(req: Request, periodId: string): Promise<Response> {
+  const db = getDb();
+  const uid = getUserId(req);
+  if ("errorResponse" in uid) return uid.errorResponse;
+  const userId = uid.userId;
+  if (req.method !== "PUT") return error("Method not allowed", 405);
+
+  const existing = db.query("SELECT * FROM pay_periods WHERE id = ? AND user_id = ?")
+    .get(Number(periodId), userId) as Record<string, unknown> | null;
+  if (!existing) return error("Pay period not found", 404);
+
+  const active = Number(existing.active) === 1 ? 0 : 1;
+  db.run("UPDATE pay_periods SET active = ? WHERE id = ? AND user_id = ?", [active, Number(periodId), userId]);
+  const row = db.query("SELECT * FROM pay_periods WHERE id = ? AND user_id = ?").get(Number(periodId), userId);
+  return json({ pay_period: row });
+}
+
 async function handlePayPeriod(req: Request, periodId: string): Promise<Response> {
   const db = getDb();
   const uid = getUserId(req);
@@ -773,8 +790,12 @@ async function handleProjection(_req: Request): Promise<Response> {
     id: number; name: string; percentage: number; fixed_amount: number | null; per_pay_period: number;
   }>;
 
+  const url = new URL(_req.url);
+  const includeInactive = url.searchParams.get("include_inactive") === "true";
   const recentPeriods = db.query(
-    "SELECT * FROM pay_periods WHERE user_id = ? ORDER BY end_date DESC LIMIT 5"
+    includeInactive
+      ? "SELECT * FROM pay_periods WHERE user_id = ? ORDER BY end_date DESC LIMIT 5"
+      : "SELECT * FROM pay_periods WHERE user_id = ? AND active = 1 ORDER BY end_date DESC LIMIT 5"
   ).all(userId) as Array<Record<string, unknown>>;
 
   let avgHours: number;
@@ -1175,6 +1196,10 @@ export async function handleApiRequest(req: Request): Promise<Response> {
   }
   if (path === "/api/pay-periods") {
     return handlePayPeriods(req);
+  }
+  if (path.startsWith("/api/pay-periods/") && path.endsWith("/toggle")) {
+    const periodId = path.split("/")[3];
+    return handleTogglePayPeriod(req, periodId);
   }
   if (path.startsWith("/api/pay-periods/")) {
     const periodId = path.split("/")[3];
